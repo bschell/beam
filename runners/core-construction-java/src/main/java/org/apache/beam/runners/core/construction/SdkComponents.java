@@ -24,13 +24,17 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import com.google.common.base.Equivalence;
 import com.google.common.collect.BiMap;
 import com.google.common.collect.HashBiMap;
+import com.google.common.collect.Iterables;
 import java.io.IOException;
 import java.util.List;
 import java.util.Set;
+import org.apache.beam.model.pipeline.v1.RunnerApi;
+import org.apache.beam.model.pipeline.v1.RunnerApi.Components;
+import org.apache.beam.model.pipeline.v1.RunnerApi.Environment;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.coders.Coder;
-import org.apache.beam.sdk.common.runner.v1.RunnerApi;
-import org.apache.beam.sdk.common.runner.v1.RunnerApi.Components;
+import org.apache.beam.sdk.options.PipelineOptions;
+import org.apache.beam.sdk.options.PortablePipelineOptions;
 import org.apache.beam.sdk.runners.AppliedPTransform;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.util.NameUtils;
@@ -47,11 +51,20 @@ public class SdkComponents {
 
   /** A map of Coder to IDs. Coders are stored here with identity equivalence. */
   private final BiMap<Equivalence.Wrapper<? extends Coder<?>>, String> coderIds;
-  // TODO: Specify environments
+
+  private final BiMap<Environment, String> environmentIds;
 
   /** Create a new {@link SdkComponents} with no components. */
-  static SdkComponents create() {
+  public static SdkComponents create() {
     return new SdkComponents();
+  }
+
+  public static SdkComponents create(PipelineOptions options) {
+    SdkComponents sdkComponents = new SdkComponents();
+    sdkComponents.registerEnvironment(
+        Environments.createOrGetDefaultEnvironment(
+            options.as(PortablePipelineOptions.class).getDefaultJavaEnvironmentUrl()));
+    return sdkComponents;
   }
 
   private SdkComponents() {
@@ -60,16 +73,17 @@ public class SdkComponents {
     this.pCollectionIds = HashBiMap.create();
     this.windowingStrategyIds = HashBiMap.create();
     this.coderIds = HashBiMap.create();
+    this.environmentIds = HashBiMap.create();
   }
 
   /**
    * Registers the provided {@link AppliedPTransform} into this {@link SdkComponents}, returning a
-   * unique ID for the {@link AppliedPTransform}. Multiple registrations of the same
-   * {@link AppliedPTransform} will return the same unique ID.
+   * unique ID for the {@link AppliedPTransform}. Multiple registrations of the same {@link
+   * AppliedPTransform} will return the same unique ID.
    *
    * <p>All of the children must already be registered within this {@link SdkComponents}.
    */
-  String registerPTransform(
+  public String registerPTransform(
       AppliedPTransform<?, ?, ?> appliedPTransform, List<AppliedPTransform<?, ?, ?>> children)
       throws IOException {
     String name = getApplicationName(appliedPTransform);
@@ -79,8 +93,8 @@ public class SdkComponents {
       return name;
     }
     checkNotNull(children, "child nodes may not be null");
-    componentsBuilder.putTransforms(name, PTransformTranslation
-        .toProto(appliedPTransform, children, this));
+    componentsBuilder.putTransforms(
+        name, PTransformTranslation.toProto(appliedPTransform, children, this));
     return name;
   }
 
@@ -113,12 +127,18 @@ public class SdkComponents {
     return transformIds.get(appliedPTransform);
   }
 
+  public String getPTransformIdOrThrow(AppliedPTransform<?, ?, ?> appliedPTransform) {
+    String existing = transformIds.get(appliedPTransform);
+    checkArgument(existing != null, "PTransform id not found for: %s", appliedPTransform);
+    return existing;
+  }
+
   /**
    * Registers the provided {@link PCollection} into this {@link SdkComponents}, returning a unique
    * ID for the {@link PCollection}. Multiple registrations of the same {@link PCollection} will
    * return the same unique ID.
    */
-  String registerPCollection(PCollection<?> pCollection) throws IOException {
+  public String registerPCollection(PCollection<?> pCollection) throws IOException {
     String existing = pCollectionIds.get(pCollection);
     if (existing != null) {
       return existing;
@@ -135,7 +155,8 @@ public class SdkComponents {
    * unique ID for the {@link WindowingStrategy}. Multiple registrations of the same {@link
    * WindowingStrategy} will return the same unique ID.
    */
-  String registerWindowingStrategy(WindowingStrategy<?, ?> windowingStrategy) throws IOException {
+  public String registerWindowingStrategy(WindowingStrategy<?, ?> windowingStrategy)
+      throws IOException {
     String existing = windowingStrategyIds.get(windowingStrategy);
     if (existing != null) {
       return existing;
@@ -155,14 +176,14 @@ public class SdkComponents {
 
   /**
    * Registers the provided {@link Coder} into this {@link SdkComponents}, returning a unique ID for
-   * the {@link Coder}. Multiple registrations of the same {@link Coder} will return the same
-   * unique ID.
+   * the {@link Coder}. Multiple registrations of the same {@link Coder} will return the same unique
+   * ID.
    *
    * <p>Coders are stored by identity to ensure that coders with implementations of {@link
    * #equals(Object)} and {@link #hashCode()} but incompatible binary formats are not considered the
    * same coder.
    */
-  String registerCoder(Coder<?> coder) throws IOException {
+  public String registerCoder(Coder<?> coder) throws IOException {
     String existing = coderIds.get(Equivalence.identity().wrap(coder));
     if (existing != null) {
       return existing;
@@ -173,6 +194,28 @@ public class SdkComponents {
     RunnerApi.Coder coderProto = CoderTranslation.toProto(coder, this);
     componentsBuilder.putCoders(name, coderProto);
     return name;
+  }
+
+  /**
+   * Registers the provided {@link Environment} into this {@link SdkComponents}, returning a unique
+   * ID for the {@link Environment}. Multiple registrations of the same {@link Environment} will
+   * return the same unique ID.
+   */
+  public String registerEnvironment(Environment env) {
+    String existing = environmentIds.get(env);
+    if (existing != null) {
+      return existing;
+    }
+    String url = env.getUrl();
+    String name = uniqify(url, environmentIds.values());
+    environmentIds.put(env, name);
+    componentsBuilder.putEnvironments(name, env);
+    return name;
+  }
+
+  public String getOnlyEnvironmentId() {
+    // TODO Support multiple environments. The environment should be decided by the translation.
+    return Iterables.getOnlyElement(componentsBuilder.getEnvironmentsMap().keySet());
   }
 
   private String uniqify(String baseName, Set<String> existing) {
@@ -191,7 +234,7 @@ public class SdkComponents {
    * PCollection PCollections}, and {@link PTransform PTransforms}.
    */
   @Experimental
-  RunnerApi.Components toComponents() {
+  public RunnerApi.Components toComponents() {
     return componentsBuilder.build();
   }
 }

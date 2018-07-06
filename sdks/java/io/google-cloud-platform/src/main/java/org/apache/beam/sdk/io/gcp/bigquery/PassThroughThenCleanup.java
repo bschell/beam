@@ -53,12 +53,13 @@ class PassThroughThenCleanup<T> extends PTransform<PCollection<T>, PCollection<T
   public PCollection<T> expand(PCollection<T> input) {
     TupleTag<T> mainOutput = new TupleTag<>();
     TupleTag<Void> cleanupSignal = new TupleTag<>();
-    PCollectionTuple outputs = input.apply(ParDo.of(new IdentityFn<T>())
-        .withOutputTags(mainOutput, TupleTagList.of(cleanupSignal)));
+    PCollectionTuple outputs =
+        input.apply(
+            ParDo.of(new IdentityFn<T>())
+                .withOutputTags(mainOutput, TupleTagList.of(cleanupSignal)));
 
-    PCollectionView<Iterable<Void>> cleanupSignalView = outputs.get(cleanupSignal)
-        .setCoder(VoidCoder.of())
-        .apply(View.<Void>asIterable());
+    PCollectionView<Iterable<Void>> cleanupSignalView =
+        outputs.get(cleanupSignal).setCoder(VoidCoder.of()).apply(View.asIterable());
 
     input
         .getPipeline()
@@ -74,7 +75,7 @@ class PassThroughThenCleanup<T> extends PTransform<PCollection<T>, PCollection<T
                     })
                 .withSideInputs(jobIdSideInput, cleanupSignalView));
 
-    return outputs.get(mainOutput);
+    return outputs.get(mainOutput).setCoder(input.getCoder());
   }
 
   private static class IdentityFn<T> extends DoFn<T, T> {
@@ -86,6 +87,16 @@ class PassThroughThenCleanup<T> extends PTransform<PCollection<T>, PCollection<T
 
   abstract static class CleanupOperation implements Serializable {
     abstract void cleanup(ContextContainer container) throws Exception;
+
+    @Override
+    public int hashCode() {
+      return 0;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+      return obj != null && obj.getClass() == this.getClass();
+    }
   }
 
   static class ContextContainer {

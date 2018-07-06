@@ -17,6 +17,7 @@
  */
 package org.apache.beam.runners.core;
 
+import static com.google.common.base.Preconditions.checkState;
 import static org.apache.beam.sdk.transforms.DoFn.ProcessContinuation.resume;
 import static org.apache.beam.sdk.transforms.DoFn.ProcessContinuation.stop;
 import static org.hamcrest.Matchers.contains;
@@ -83,11 +84,16 @@ public class SplittableParDoProcessFnTest {
     }
   }
 
-  private static class SomeRestrictionTracker implements RestrictionTracker<SomeRestriction> {
+  private static class SomeRestrictionTracker extends RestrictionTracker<SomeRestriction, Void> {
     private final SomeRestriction someRestriction;
 
     public SomeRestrictionTracker(SomeRestriction someRestriction) {
       this.someRestriction = someRestriction;
+    }
+
+    @Override
+    protected boolean tryClaimImpl(Void position) {
+      return true;
     }
 
     @Override
@@ -104,15 +110,18 @@ public class SplittableParDoProcessFnTest {
     public void checkDone() {}
   }
 
-  @Rule
-  public TestPipeline pipeline = TestPipeline.create();
+  @Rule public TestPipeline pipeline = TestPipeline.create();
 
   /**
-   * A helper for testing {@link ProcessFn} on 1 element (but
-   * possibly over multiple {@link DoFn.ProcessElement} calls).
+   * A helper for testing {@link ProcessFn} on 1 element (but possibly over multiple {@link
+   * DoFn.ProcessElement} calls).
    */
   private static class ProcessFnTester<
-          InputT, OutputT, RestrictionT, TrackerT extends RestrictionTracker<RestrictionT>>
+          InputT,
+          OutputT,
+          RestrictionT,
+          PositionT,
+          TrackerT extends RestrictionTracker<RestrictionT, PositionT>>
       implements AutoCloseable {
     private final DoFnTester<KeyedWorkItem<String, KV<InputT, RestrictionT>>, OutputT> tester;
     private Instant currentProcessingTime;
@@ -133,28 +142,14 @@ public class SplittableParDoProcessFnTest {
       WindowingStrategy<InputT, BoundedWindow> windowingStrategy =
           (WindowingStrategy) WindowingStrategy.of(FixedWindows.of(Duration.standardSeconds(1)));
       final ProcessFn<InputT, OutputT, RestrictionT, TrackerT> processFn =
-          new ProcessFn<>(
-              fn, inputCoder, restrictionCoder, windowingStrategy);
+          new ProcessFn<>(fn, inputCoder, restrictionCoder, windowingStrategy);
       this.tester = DoFnTester.of(processFn);
       this.timerInternals = new InMemoryTimerInternals();
       this.stateInternals = new TestInMemoryStateInternals<>("dummy");
-      processFn.setStateInternalsFactory(
-          new StateInternalsFactory<String>() {
-            @Override
-            public StateInternals stateInternalsForKey(String key) {
-              return stateInternals;
-            }
-          });
-      processFn.setTimerInternalsFactory(
-          new TimerInternalsFactory<String>() {
-            @Override
-            public TimerInternals timerInternalsForKey(String key) {
-              return timerInternals;
-            }
-          });
+      processFn.setStateInternalsFactory(key -> stateInternals);
+      processFn.setTimerInternalsFactory(key -> timerInternals);
       processFn.setProcessElementInvoker(
-          new OutputAndTimeBoundedSplittableProcessElementInvoker<
-              InputT, OutputT, RestrictionT, TrackerT>(
+          new OutputAndTimeBoundedSplittableProcessElementInvoker<>(
               fn,
               tester.getPipelineOptions(),
               new OutputWindowedValueToDoFnTester<>(tester),
@@ -222,8 +217,7 @@ public class SplittableParDoProcessFnTest {
       if (timers.isEmpty()) {
         return false;
       }
-      tester.processElement(
-          KeyedWorkItems.<String, KV<InputT, RestrictionT>>timersWorkItem("key", timers));
+      tester.processElement(KeyedWorkItems.timersWorkItem("key", timers));
       return true;
     }
 
@@ -274,6 +268,7 @@ public class SplittableParDoProcessFnTest {
   private static class ToStringFn extends DoFn<Integer, String> {
     @ProcessElement
     public void process(ProcessContext c, SomeRestrictionTracker tracker) {
+      checkState(tracker.tryClaim(null));
       c.output(c.element().toString() + "a");
       c.output(c.element().toString() + "b");
       c.output(c.element().toString() + "c");
@@ -298,7 +293,7 @@ public class SplittableParDoProcessFnTest {
         new IntervalWindow(
             base.minus(Duration.standardMinutes(1)), base.plus(Duration.standardMinutes(1)));
 
-    ProcessFnTester<Integer, String, SomeRestriction, SomeRestrictionTracker> tester =
+    ProcessFnTester<Integer, String, SomeRestriction, Void, SomeRestrictionTracker> tester =
         new ProcessFnTester<>(
             base,
             fn,
@@ -346,7 +341,7 @@ public class SplittableParDoProcessFnTest {
     DoFn<Instant, String> fn = new WatermarkUpdateFn();
     Instant base = Instant.now();
 
-    ProcessFnTester<Instant, String, OffsetRange, OffsetRangeTracker> tester =
+    ProcessFnTester<Instant, String, OffsetRange, Long, OffsetRangeTracker> tester =
         new ProcessFnTester<>(
             base,
             fn,
@@ -372,6 +367,7 @@ public class SplittableParDoProcessFnTest {
   private static class SelfInitiatedResumeFn extends DoFn<Integer, String> {
     @ProcessElement
     public ProcessContinuation process(ProcessContext c, SomeRestrictionTracker tracker) {
+      checkState(tracker.tryClaim(null));
       c.output(c.element().toString());
       return resume().withResumeDelay(Duration.standardSeconds(5));
     }
@@ -386,7 +382,7 @@ public class SplittableParDoProcessFnTest {
   public void testResumeSetsTimer() throws Exception {
     DoFn<Integer, String> fn = new SelfInitiatedResumeFn();
     Instant base = Instant.now();
-    ProcessFnTester<Integer, String, SomeRestriction, SomeRestrictionTracker> tester =
+    ProcessFnTester<Integer, String, SomeRestriction, Void, SomeRestrictionTracker> tester =
         new ProcessFnTester<>(
             base,
             fn,
@@ -426,9 +422,10 @@ public class SplittableParDoProcessFnTest {
     @ProcessElement
     public ProcessContinuation process(ProcessContext c, OffsetRangeTracker tracker) {
       for (long i = tracker.currentRestriction().getFrom(), numIterations = 0;
-          tracker.tryClaim(i); ++i, ++numIterations) {
+          tracker.tryClaim(i);
+          ++i, ++numIterations) {
         c.output(String.valueOf(c.element() + i));
-        if (numIterations == numOutputsPerCall) {
+        if (numIterations == numOutputsPerCall - 1) {
           return resume();
         }
       }
@@ -441,10 +438,11 @@ public class SplittableParDoProcessFnTest {
     }
   }
 
+  @Test
   public void testResumeCarriesOverState() throws Exception {
     DoFn<Integer, String> fn = new CounterFn(1);
     Instant base = Instant.now();
-    ProcessFnTester<Integer, String, OffsetRange, OffsetRangeTracker> tester =
+    ProcessFnTester<Integer, String, OffsetRange, Long, OffsetRangeTracker> tester =
         new ProcessFnTester<>(
             base,
             fn,
@@ -473,10 +471,14 @@ public class SplittableParDoProcessFnTest {
     Instant base = Instant.now();
     int baseIndex = 42;
 
-    ProcessFnTester<Integer, String, OffsetRange, OffsetRangeTracker> tester =
+    ProcessFnTester<Integer, String, OffsetRange, Long, OffsetRangeTracker> tester =
         new ProcessFnTester<>(
-            base, fn, BigEndianIntegerCoder.of(), SerializableCoder.of(OffsetRange.class),
-            max, MAX_BUNDLE_DURATION);
+            base,
+            fn,
+            BigEndianIntegerCoder.of(),
+            SerializableCoder.of(OffsetRange.class),
+            max,
+            MAX_BUNDLE_DURATION);
 
     List<String> elements;
 
@@ -515,10 +517,14 @@ public class SplittableParDoProcessFnTest {
     Instant base = Instant.now();
     int baseIndex = 42;
 
-    ProcessFnTester<Integer, String, OffsetRange, OffsetRangeTracker> tester =
+    ProcessFnTester<Integer, String, OffsetRange, Long, OffsetRangeTracker> tester =
         new ProcessFnTester<>(
-            base, fn, BigEndianIntegerCoder.of(), SerializableCoder.of(OffsetRange.class),
-            max, maxBundleDuration);
+            base,
+            fn,
+            BigEndianIntegerCoder.of(),
+            SerializableCoder.of(OffsetRange.class),
+            max,
+            maxBundleDuration);
 
     List<String> elements;
 
@@ -580,7 +586,7 @@ public class SplittableParDoProcessFnTest {
   @Test
   public void testInvokesLifecycleMethods() throws Exception {
     DoFn<Integer, String> fn = new LifecycleVerifyingFn();
-    try (ProcessFnTester<Integer, String, SomeRestriction, SomeRestrictionTracker> tester =
+    try (ProcessFnTester<Integer, String, SomeRestriction, Void, SomeRestrictionTracker> tester =
         new ProcessFnTester<>(
             Instant.now(),
             fn,

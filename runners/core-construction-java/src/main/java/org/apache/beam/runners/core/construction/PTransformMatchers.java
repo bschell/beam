@@ -36,7 +36,6 @@ import org.apache.beam.sdk.transforms.ViewFn;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.ProcessElementMethod;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignatures;
-import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PValue;
 
@@ -52,8 +51,8 @@ public class PTransformMatchers {
   private PTransformMatchers() {}
 
   /**
-   * Returns a {@link PTransformMatcher} that matches a {@link PTransform} if the URN of the
-   * {@link PTransform} is equal to the URN provided ot this matcher.
+   * Returns a {@link PTransformMatcher} that matches a {@link PTransform} if the URN of the {@link
+   * PTransform} is equal to the URN provided ot this matcher.
    */
   public static PTransformMatcher urnEqualTo(String urn) {
     return new EqualUrnPTransformMatcher(urn);
@@ -73,9 +72,7 @@ public class PTransformMatchers {
 
     @Override
     public String toString() {
-      return MoreObjects.toStringHelper(this)
-          .add("urn", urn)
-          .toString();
+      return MoreObjects.toStringHelper(this).add("urn", urn).toString();
     }
   }
 
@@ -105,6 +102,64 @@ public class PTransformMatchers {
           .add("class", clazz)
           .toString();
     }
+  }
+
+  /**
+   * A {@link PTransformMatcher} that matches a {@link ParDo.SingleOutput} containing a {@link DoFn}
+   * that requires stable input, as signified by {@link ProcessElementMethod#requiresStableInput()}.
+   */
+  public static PTransformMatcher requiresStableInputParDoSingle() {
+    return new PTransformMatcher() {
+      @Override
+      public boolean matches(AppliedPTransform<?, ?, ?> application) {
+        PTransform<?, ?> transform = application.getTransform();
+        if (transform instanceof ParDo.SingleOutput) {
+          DoFn<?, ?> fn = ((ParDo.SingleOutput<?, ?>) transform).getFn();
+          DoFnSignature signature = DoFnSignatures.signatureForDoFn(fn);
+          return signature.processElement().requiresStableInput();
+        }
+        return false;
+      }
+
+      @Override
+      public boolean matchesDuringValidation(AppliedPTransform<?, ?, ?> application) {
+        return false;
+      }
+
+      @Override
+      public String toString() {
+        return MoreObjects.toStringHelper("RequiresStableInputParDoSingleMatcher").toString();
+      }
+    };
+  }
+
+  /**
+   * A {@link PTransformMatcher} that matches a {@link ParDo.MultiOutput} containing a {@link DoFn}
+   * that requires stable input, as signified by {@link ProcessElementMethod#requiresStableInput()}.
+   */
+  public static PTransformMatcher requiresStableInputParDoMulti() {
+    return new PTransformMatcher() {
+      @Override
+      public boolean matches(AppliedPTransform<?, ?, ?> application) {
+        PTransform<?, ?> transform = application.getTransform();
+        if (transform instanceof ParDo.MultiOutput) {
+          DoFn<?, ?> fn = ((ParDo.MultiOutput<?, ?>) transform).getFn();
+          DoFnSignature signature = DoFnSignatures.signatureForDoFn(fn);
+          return signature.processElement().requiresStableInput();
+        }
+        return false;
+      }
+
+      @Override
+      public boolean matchesDuringValidation(AppliedPTransform<?, ?, ?> application) {
+        return false;
+      }
+
+      @Override
+      public String toString() {
+        return MoreObjects.toStringHelper("RequiresStableInputParDoMultiMatcher").toString();
+      }
+    };
   }
 
   /**
@@ -212,8 +267,8 @@ public class PTransformMatchers {
   }
 
   /**
-   * A {@link PTransformMatcher} that matches a {@link ParDo} transform by URN
-   * and whether it contains state or timers as specified by {@link ParDoTranslation}.
+   * A {@link PTransformMatcher} that matches a {@link ParDo} transform by URN and whether it
+   * contains state or timers as specified by {@link ParDoTranslation}.
    */
   public static PTransformMatcher stateOrTimerParDo() {
     return new PTransformMatcher() {
@@ -244,8 +299,8 @@ public class PTransformMatchers {
 
   /**
    * A {@link PTransformMatcher} that matches a {@link ParDo.MultiOutput} containing a {@link DoFn}
-   * that uses state or timers, as specified by {@link DoFnSignature#usesState()} and
-   * {@link DoFnSignature#usesTimers()}.
+   * that uses state or timers, as specified by {@link DoFnSignature#usesState()} and {@link
+   * DoFnSignature#usesTimers()}.
    */
   public static PTransformMatcher stateOrTimerParDoMulti() {
     return new PTransformMatcher() {
@@ -296,23 +351,20 @@ public class PTransformMatchers {
   }
 
   public static PTransformMatcher createViewWithViewFn(final Class<? extends ViewFn> viewFnType) {
-    return new PTransformMatcher() {
-      @Override
-      public boolean matches(AppliedPTransform<?, ?, ?> application) {
-        if (!(application.getTransform() instanceof CreatePCollectionView)) {
-          return false;
-        }
-        CreatePCollectionView<?, ?> createView =
-            (CreatePCollectionView<?, ?>) application.getTransform();
-        ViewFn<Iterable<WindowedValue<?>>, ?> viewFn = createView.getView().getViewFn();
-        return viewFn.getClass().equals(viewFnType);
+    return application -> {
+      if (!(application.getTransform() instanceof CreatePCollectionView)) {
+        return false;
       }
+      CreatePCollectionView<?, ?> createView =
+          (CreatePCollectionView<?, ?>) application.getTransform();
+      ViewFn<?, ?> viewFn = createView.getView().getViewFn();
+      return viewFn.getClass().equals(viewFnType);
     };
   }
 
   /**
-   * A {@link PTransformMatcher} which matches a {@link Flatten.PCollections} which
-   * consumes no input {@link PCollection PCollections}.
+   * A {@link PTransformMatcher} which matches a {@link Flatten.PCollections} which consumes no
+   * input {@link PCollection PCollections}.
    */
   public static PTransformMatcher emptyFlatten() {
     return new PTransformMatcher() {
@@ -330,8 +382,8 @@ public class PTransformMatchers {
   }
 
   /**
-   * A {@link PTransformMatcher} which matches a {@link Flatten.PCollections} which
-   * consumes a single input {@link PCollection} multiple times.
+   * A {@link PTransformMatcher} which matches a {@link Flatten.PCollections} which consumes a
+   * single input {@link PCollection} multiple times.
    */
   public static PTransformMatcher flattenWithDuplicateInputs() {
     return new PTransformMatcher() {
@@ -357,24 +409,20 @@ public class PTransformMatchers {
   }
 
   public static PTransformMatcher writeWithRunnerDeterminedSharding() {
-    return new PTransformMatcher() {
-      @Override
-      public boolean matches(AppliedPTransform<?, ?, ?> application) {
-        if (WRITE_FILES_TRANSFORM_URN.equals(
-            PTransformTranslation.urnForTransformOrNull(application.getTransform()))) {
-          try {
-            return WriteFilesTranslation.isRunnerDeterminedSharding(
-                (AppliedPTransform) application);
-          } catch (IOException exc) {
-            throw new RuntimeException(
-                String.format(
-                    "Transform with URN %s failed to parse: %s",
-                    WRITE_FILES_TRANSFORM_URN, application.getTransform()),
-                exc);
-          }
+    return application -> {
+      if (WRITE_FILES_TRANSFORM_URN.equals(
+          PTransformTranslation.urnForTransformOrNull(application.getTransform()))) {
+        try {
+          return WriteFilesTranslation.isRunnerDeterminedSharding((AppliedPTransform) application);
+        } catch (IOException exc) {
+          throw new RuntimeException(
+              String.format(
+                  "Transform with URN %s failed to parse: %s",
+                  WRITE_FILES_TRANSFORM_URN, application.getTransform()),
+              exc);
         }
-        return false;
       }
+      return false;
     };
   }
 }

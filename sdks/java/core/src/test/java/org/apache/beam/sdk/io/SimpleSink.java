@@ -19,6 +19,7 @@ package org.apache.beam.sdk.io;
 
 import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
+import java.nio.charset.StandardCharsets;
 import org.apache.beam.sdk.io.DefaultFilenamePolicy.Params;
 import org.apache.beam.sdk.io.fs.ResolveOptions.StandardResolveOptions;
 import org.apache.beam.sdk.io.fs.ResourceId;
@@ -36,12 +37,17 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
     super(StaticValueProvider.of(tempDirectory), dynamicDestinations, writableByteChannelFactory);
   }
 
+  public SimpleSink(
+      ResourceId tempDirectory,
+      DynamicDestinations<String, DestinationT, String> dynamicDestinations,
+      Compression compression) {
+    super(StaticValueProvider.of(tempDirectory), dynamicDestinations, compression);
+  }
+
   public static SimpleSink<Void> makeSimpleSink(
       ResourceId tempDirectory, FilenamePolicy filenamePolicy) {
     return new SimpleSink<>(
-        tempDirectory,
-        DynamicFileDestinations.<String>constant(filenamePolicy),
-        CompressionType.UNCOMPRESSED);
+        tempDirectory, DynamicFileDestinations.constant(filenamePolicy), Compression.UNCOMPRESSED);
   }
 
   public static SimpleSink<Void> makeSimpleSink(
@@ -61,6 +67,20 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
     return new SimpleSink<>(baseDirectory, dynamicDestinations, writableByteChannelFactory);
   }
 
+  public static SimpleSink<Void> makeSimpleSink(
+      ResourceId baseDirectory,
+      String prefix,
+      String shardTemplate,
+      String suffix,
+      Compression compression) {
+    return makeSimpleSink(
+        baseDirectory,
+        prefix,
+        shardTemplate,
+        suffix,
+        FileBasedSink.CompressionType.fromCanonical(compression));
+  }
+
   @Override
   public SimpleWriteOperation<DestinationT> createWriteOperation() {
     return new SimpleWriteOperation<>(this);
@@ -68,16 +88,16 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
 
   static final class SimpleWriteOperation<DestinationT>
       extends WriteOperation<DestinationT, String> {
-    public SimpleWriteOperation(SimpleSink sink, ResourceId tempOutputDirectory) {
+    public SimpleWriteOperation(SimpleSink<DestinationT> sink, ResourceId tempOutputDirectory) {
       super(sink, tempOutputDirectory);
     }
 
-    public SimpleWriteOperation(SimpleSink sink) {
+    public SimpleWriteOperation(SimpleSink<DestinationT> sink) {
       super(sink);
     }
 
     @Override
-    public SimpleWriter<DestinationT> createWriter() throws Exception {
+    public SimpleWriter<DestinationT> createWriter() {
       return new SimpleWriter<>(this);
     }
   }
@@ -88,16 +108,16 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
 
     private WritableByteChannel channel;
 
-    public SimpleWriter(SimpleWriteOperation writeOperation) {
+    public SimpleWriter(SimpleWriteOperation<DestinationT> writeOperation) {
       super(writeOperation, MimeTypes.TEXT);
     }
 
-    private static ByteBuffer wrap(String value) throws Exception {
-      return ByteBuffer.wrap((value + "\n").getBytes("UTF-8"));
+    private static ByteBuffer wrap(String value) {
+      return ByteBuffer.wrap((value + "\n").getBytes(StandardCharsets.UTF_8));
     }
 
     @Override
-    protected void prepareWrite(WritableByteChannel channel) throws Exception {
+    protected void prepareWrite(WritableByteChannel channel) {
       this.channel = channel;
     }
 

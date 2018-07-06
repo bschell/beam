@@ -16,14 +16,15 @@
 #
 
 """Unit tests for the Create and _CreateSource classes."""
+import logging
 import unittest
-
-from apache_beam.io import source_test_utils
 
 from apache_beam import Create
 from apache_beam.coders import FastPrimitivesCoder
+from apache_beam.io import source_test_utils
 from apache_beam.testing.test_pipeline import TestPipeline
-from apache_beam.testing.util import assert_that, equal_to
+from apache_beam.testing.util import assert_that
+from apache_beam.testing.util import equal_to
 
 
 class CreateTest(unittest.TestCase):
@@ -120,3 +121,8 @@ class CreateTest(unittest.TestCase):
 
     self.assertEqual(
         expected_split_points_report, split_points_report)
+
+
+if __name__ == '__main__':
+  logging.getLogger().setLevel(logging.INFO)
+  unittest.main()

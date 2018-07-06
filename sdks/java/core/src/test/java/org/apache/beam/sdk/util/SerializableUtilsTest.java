@@ -18,7 +18,9 @@
 package org.apache.beam.sdk.util;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotSame;
 
+import com.google.common.base.Charsets;
 import com.google.common.collect.ImmutableList;
 import java.io.IOException;
 import java.io.InputStream;
@@ -28,6 +30,9 @@ import java.util.List;
 import org.apache.beam.sdk.coders.AtomicCoder;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CoderException;
+import org.apache.beam.sdk.io.BoundedSource;
+import org.apache.beam.sdk.options.PipelineOptions;
+import org.apache.beam.sdk.testing.InterceptingUrlClassLoader;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
@@ -51,6 +56,30 @@ public class SerializableUtilsTest {
   }
 
   @Test
+  public void customClassLoader() throws Exception {
+    // define a classloader with test-classes in it
+    final ClassLoader testLoader = Thread.currentThread().getContextClassLoader();
+    final ClassLoader loader = new InterceptingUrlClassLoader(testLoader, MySource.class.getName());
+    final Class<?> source =
+        loader.loadClass("org.apache.beam.sdk.util.SerializableUtilsTest$MySource");
+    assertNotSame(source.getClassLoader(), MySource.class.getClassLoader());
+
+    // validate if the caller set the classloader that it works well
+    final Serializable customLoaderSourceInstance =
+        Serializable.class.cast(source.getConstructor().newInstance());
+    final Thread thread = Thread.currentThread();
+    thread.setContextClassLoader(loader);
+    try {
+      assertSerializationClassLoader(loader, customLoaderSourceInstance);
+    } finally {
+      thread.setContextClassLoader(testLoader);
+    }
+
+    // now let beam be a little be more fancy and try to ensure it by itself from the incoming value
+    assertSerializationClassLoader(loader, customLoaderSourceInstance);
+  }
+
+  @Test
   public void testTranscode() {
     String stringValue = "hi bob";
     int intValue = 42;
@@ -67,8 +96,7 @@ public class SerializableUtilsTest {
     expectedException.expect(IllegalArgumentException.class);
     expectedException.expectMessage("unable to deserialize a bogus string");
     SerializableUtils.deserializeFromByteArray(
-        "this isn't legal".getBytes(),
-        "a bogus string");
+        "this isn't legal".getBytes(Charsets.UTF_8), "a bogus string");
   }
 
   /** A class that is not serializable by Java. */
@@ -89,13 +117,10 @@ public class SerializableUtilsTest {
     private final Object unserializableField = new Object();
 
     @Override
-    public void encode(Object value, OutputStream outStream)
-        throws CoderException, IOException {
-    }
+    public void encode(Object value, OutputStream outStream) throws CoderException, IOException {}
 
     @Override
-    public Object decode(InputStream inStream)
-        throws CoderException, IOException {
+    public Object decode(InputStream inStream) throws CoderException, IOException {
       return unserializableField;
     }
 
@@ -113,5 +138,34 @@ public class SerializableUtilsTest {
     expectedException.expect(IllegalArgumentException.class);
     expectedException.expectMessage("unable to serialize");
     SerializableUtils.ensureSerializable(new UnserializableCoderByJava());
+  }
+
+  private void assertSerializationClassLoader(
+      final ClassLoader loader, final Serializable customLoaderSourceInstance) {
+    final Serializable copy = SerializableUtils.ensureSerializable(customLoaderSourceInstance);
+    assertEquals(loader, copy.getClass().getClassLoader());
+    assertEquals(
+        copy.getClass().getClassLoader(), customLoaderSourceInstance.getClass().getClassLoader());
+  }
+
+  /**
+   * a sample class to test framework serialization, {@see SerializableUtilsTest#customClassLoader}.
+   */
+  public static class MySource extends BoundedSource<String> {
+    @Override
+    public List<? extends BoundedSource<String>> split(
+        final long desiredBundleSizeBytes, final PipelineOptions options) throws Exception {
+      return null;
+    }
+
+    @Override
+    public long getEstimatedSizeBytes(final PipelineOptions options) throws Exception {
+      return 0;
+    }
+
+    @Override
+    public BoundedReader<String> createReader(final PipelineOptions options) throws IOException {
+      return null;
+    }
   }
 }

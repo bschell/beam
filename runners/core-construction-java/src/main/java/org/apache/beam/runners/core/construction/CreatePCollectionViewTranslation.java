@@ -21,15 +21,13 @@ package org.apache.beam.runners.core.construction;
 import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.auto.service.AutoService;
-import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.BytesValue;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.Map;
+import org.apache.beam.model.pipeline.v1.RunnerApi;
+import org.apache.beam.model.pipeline.v1.RunnerApi.FunctionSpec;
 import org.apache.beam.runners.core.construction.PTransformTranslation.TransformPayloadTranslator;
-import org.apache.beam.sdk.common.runner.v1.RunnerApi;
-import org.apache.beam.sdk.common.runner.v1.RunnerApi.FunctionSpec;
 import org.apache.beam.sdk.runners.AppliedPTransform;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
@@ -64,8 +62,8 @@ public class CreatePCollectionViewTranslation {
     RunnerApi.PTransform transformProto =
         PTransformTranslation.toProto(
             application,
-            Collections.<AppliedPTransform<?, ?, ?>>emptyList(),
-            SdkComponents.create());
+            Collections.emptyList(),
+            SdkComponents.create(application.getPipeline().getOptions()));
 
     checkArgument(
         PTransformTranslation.CREATE_VIEW_TRANSFORM_URN.equals(transformProto.getSpec().getUrn()),
@@ -77,18 +75,13 @@ public class CreatePCollectionViewTranslation {
 
     return (PCollectionView<ViewT>)
         SerializableUtils.deserializeFromByteArray(
-            transformProto
-                .getSpec()
-                .getParameter()
-                .unpack(BytesValue.class)
-                .getValue()
-                .toByteArray(),
+            transformProto.getSpec().getPayload().toByteArray(),
             PCollectionView.class.getSimpleName());
   }
 
   /**
-   * @deprecated runners should move away from translating `CreatePCollectionView` and treat this
-   * as part of the translation for a `ParDo` side input.
+   * @deprecated runners should move away from translating `CreatePCollectionView` and treat this as
+   *     part of the translation for a `ParDo` side input.
    */
   @Deprecated
   static class CreatePCollectionViewTranslator
@@ -104,14 +97,9 @@ public class CreatePCollectionViewTranslation {
         SdkComponents components) {
       return FunctionSpec.newBuilder()
           .setUrn(getUrn(transform.getTransform()))
-          .setParameter(
-              Any.pack(
-                  BytesValue.newBuilder()
-                      .setValue(
-                          ByteString.copyFrom(
-                              SerializableUtils.serializeToByteArray(
-                                  transform.getTransform().getView())))
-                      .build()))
+          .setPayload(
+              ByteString.copyFrom(
+                  SerializableUtils.serializeToByteArray(transform.getTransform().getView())))
           .build();
     }
   }
@@ -119,8 +107,8 @@ public class CreatePCollectionViewTranslation {
   /**
    * Registers {@link CreatePCollectionViewTranslator}.
    *
-   * @deprecated runners should move away from translating `CreatePCollectionView` and treat this
-   * as part of the translation for a `ParDo` side input.
+   * @deprecated runners should move away from translating `CreatePCollectionView` and treat this as
+   *     part of the translation for a `ParDo` side input.
    */
   @AutoService(TransformPayloadTranslatorRegistrar.class)
   @Deprecated

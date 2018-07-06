@@ -20,10 +20,12 @@ package org.apache.beam.sdk.io.gcp.bigquery;
 
 import static com.google.common.base.Preconditions.checkState;
 
+import com.google.api.services.bigquery.model.Dataset;
 import com.google.api.services.bigquery.model.Job;
 import com.google.api.services.bigquery.model.JobStatus;
 import com.google.api.services.bigquery.model.TableReference;
 import com.google.api.services.bigquery.model.TableSchema;
+import com.google.api.services.bigquery.model.TimePartitioning;
 import com.google.cloud.hadoop.util.ApiErrorExtractor;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.hash.Hashing;
@@ -82,12 +84,7 @@ public class BigQueryHelpers {
   }
 
   static <K, V> List<V> getOrCreateMapListValue(Map<K, List<V>> map, K key) {
-    List<V> value = map.get(key);
-    if (value == null) {
-      value = new ArrayList<>();
-      map.put(key, value);
-    }
-    return value;
+    return map.computeIfAbsent(key, k -> new ArrayList<>());
   }
 
   /**
@@ -111,7 +108,21 @@ public class BigQueryHelpers {
     return ref.setDatasetId(match.group("DATASET")).setTableId(match.group("TABLE"));
   }
 
+  /** Strip off any partition decorator information from a tablespec. */
+  public static String stripPartitionDecorator(String tableSpec) {
+    int index = tableSpec.lastIndexOf('$');
+    return (index == -1) ? tableSpec : tableSpec.substring(0, index);
+  }
+
   static String jobToPrettyString(@Nullable Job job) throws IOException {
+    if (job != null && job.getConfiguration().getLoad() != null) {
+      // Removing schema and sourceUris from error messages for load jobs since these fields can be
+      // quite long and error message might not be displayed properly in runner specific logs.
+      job = job.clone();
+      job.getConfiguration().getLoad().setSchema(null);
+      job.getConfiguration().getLoad().setSourceUris(null);
+    }
+
     return job == null ? "null" : job.toPrettyString();
   }
 
@@ -205,6 +216,23 @@ public class BigQueryHelpers {
     }
   }
 
+  static String getDatasetLocation(
+      DatasetService datasetService, String projectId, String datasetId) {
+    Dataset dataset;
+    try {
+      dataset = datasetService.getDataset(projectId, datasetId);
+    } catch (Exception e) {
+      if (e instanceof InterruptedException) {
+        Thread.currentThread().interrupt();
+      }
+      throw new RuntimeException(
+          String.format(
+              "unable to obtain dataset for dataset %s in project %s", datasetId, projectId),
+          e);
+    }
+    return dataset.getLocation();
+  }
+
   static void verifyTablePresence(DatasetService datasetService, TableReference table) {
     try {
       datasetService.getTable(table);
@@ -225,15 +253,19 @@ public class BigQueryHelpers {
   }
 
   // Create a unique job id for a table load.
-  static String createJobId(String prefix, TableDestination tableDestination, int partition) {
+  static String createJobId(
+      String prefix, TableDestination tableDestination, int partition, long index) {
     // Job ID must be different for each partition of each table.
     String destinationHash =
         Hashing.murmur3_128().hashUnencodedChars(tableDestination.toString()).toString();
+    String jobId = String.format("%s_%s", prefix, destinationHash);
     if (partition >= 0) {
-      return String.format("%s_%s_%05d", prefix, destinationHash, partition);
-    } else {
-      return String.format("%s_%s", prefix, destinationHash);
+      jobId += String.format("_%05d", partition);
     }
+    if (index >= 0) {
+      jobId += String.format("_%05d", index);
+    }
+    return jobId;
   }
 
   @VisibleForTesting
@@ -287,6 +319,13 @@ public class BigQueryHelpers {
     }
   }
 
+  static class TimePartitioningToJson implements SerializableFunction<TimePartitioning, String> {
+    @Override
+    public String apply(TimePartitioning partitioning) {
+      return toJsonString(partitioning);
+    }
+  }
+
   static String createJobIdToken(String jobName, String stepUuid) {
     return String.format("beam_job_%s_%s", stepUuid, jobName.replaceAll("-", ""));
   }
@@ -298,10 +337,11 @@ public class BigQueryHelpers {
   static TableReference createTempTableReference(String projectId, String jobUuid) {
     String queryTempDatasetId = "temp_dataset_" + jobUuid;
     String queryTempTableId = "temp_table_" + jobUuid;
-    TableReference queryTempTableRef = new TableReference()
-        .setProjectId(projectId)
-        .setDatasetId(queryTempDatasetId)
-        .setTableId(queryTempTableId);
+    TableReference queryTempTableRef =
+        new TableReference()
+            .setProjectId(projectId)
+            .setDatasetId(queryTempDatasetId)
+            .setTableId(queryTempTableId);
     return queryTempTableRef;
   }
 

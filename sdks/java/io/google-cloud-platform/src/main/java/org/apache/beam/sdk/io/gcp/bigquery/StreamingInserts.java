@@ -19,8 +19,6 @@
 package org.apache.beam.sdk.io.gcp.bigquery;
 
 import com.google.api.services.bigquery.model.TableRow;
-import org.apache.beam.sdk.coders.Coder;
-import org.apache.beam.sdk.coders.VoidCoder;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.CreateDisposition;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.values.KV;
@@ -38,26 +36,29 @@ public class StreamingInserts<DestinationT>
   private InsertRetryPolicy retryPolicy;
 
   /** Constructor. */
-  public StreamingInserts(CreateDisposition createDisposition,
-                   DynamicDestinations<?, DestinationT> dynamicDestinations) {
-    this(createDisposition, dynamicDestinations, new BigQueryServicesImpl(),
+  public StreamingInserts(
+      CreateDisposition createDisposition,
+      DynamicDestinations<?, DestinationT> dynamicDestinations) {
+    this(
+        createDisposition,
+        dynamicDestinations,
+        new BigQueryServicesImpl(),
         InsertRetryPolicy.alwaysRetry());
   }
 
   /** Constructor. */
-  private StreamingInserts(CreateDisposition createDisposition,
-                          DynamicDestinations<?, DestinationT> dynamicDestinations,
-                          BigQueryServices bigQueryServices,
-                          InsertRetryPolicy retryPolicy) {
+  private StreamingInserts(
+      CreateDisposition createDisposition,
+      DynamicDestinations<?, DestinationT> dynamicDestinations,
+      BigQueryServices bigQueryServices,
+      InsertRetryPolicy retryPolicy) {
     this.createDisposition = createDisposition;
     this.dynamicDestinations = dynamicDestinations;
     this.bigQueryServices = bigQueryServices;
     this.retryPolicy = retryPolicy;
   }
 
-  /**
-   * Specify a retry policy for failed inserts.
-   */
+  /** Specify a retry policy for failed inserts. */
   public StreamingInserts<DestinationT> withInsertRetryPolicy(InsertRetryPolicy retryPolicy) {
     return new StreamingInserts<>(
         createDisposition, dynamicDestinations, bigQueryServices, retryPolicy);
@@ -65,12 +66,7 @@ public class StreamingInserts<DestinationT>
 
   StreamingInserts<DestinationT> withTestServices(BigQueryServices bigQueryServices) {
     return new StreamingInserts<>(
-        createDisposition, dynamicDestinations, bigQueryServices, retryPolicy);  }
-
-
-  @Override
-  protected Coder<Void> getDefaultOutputCoder() {
-    return VoidCoder.of();
+        createDisposition, dynamicDestinations, bigQueryServices, retryPolicy);
   }
 
   @Override

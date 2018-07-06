@@ -20,8 +20,8 @@ import cStringIO
 import gzip
 import logging
 import math
-import random
 import os
+import random
 import tempfile
 import unittest
 
@@ -31,15 +31,13 @@ import apache_beam as beam
 from apache_beam.io import filebasedsource
 from apache_beam.io import iobase
 from apache_beam.io import range_trackers
-from apache_beam.io.filesystem import CompressionTypes
-
 # importing following private classes for testing
 from apache_beam.io.concat_source import ConcatSource
 from apache_beam.io.filebasedsource import _SingleFileSource as SingleFileSource
-
 from apache_beam.io.filebasedsource import FileBasedSource
-from apache_beam.options.value_provider import StaticValueProvider
+from apache_beam.io.filesystem import CompressionTypes
 from apache_beam.options.value_provider import RuntimeValueProvider
+from apache_beam.options.value_provider import StaticValueProvider
 from apache_beam.testing.test_pipeline import TestPipeline
 from apache_beam.testing.util import assert_that
 from apache_beam.testing.util import equal_to
@@ -101,7 +99,7 @@ def write_data(
       elif eol == EOL.LF_WITH_NOTHING_AT_LAST_LINE:
         sep = '' if i == (num_lines - 1) else sep_values[0]
       else:
-        raise ValueError('Received unknown value %s for eol.', eol)
+        raise ValueError('Received unknown value %s for eol.' % eol)
 
       f.write(data + sep)
 
@@ -332,7 +330,7 @@ class TestFileBasedSource(unittest.TestCase):
     variance = 5
 
     sizes = []
-    for _ in xrange(num_files):
+    for _ in range(num_files):
       sizes.append(int(random.uniform(base_size - variance,
                                       base_size + variance)))
     pattern, _ = write_pattern(sizes)
@@ -454,7 +452,7 @@ class TestFileBasedSource(unittest.TestCase):
   def test_read_pattern_bzip2(self):
     _, lines = write_data(200)
     splits = [0, 34, 100, 140, 164, 188, 200]
-    chunks = [lines[splits[i-1]:splits[i]] for i in xrange(1, len(splits))]
+    chunks = [lines[splits[i-1]:splits[i]] for i in range(1, len(splits))]
     compressed_chunks = []
     for c in chunks:
       compressobj = bz2.BZ2Compressor()
@@ -472,7 +470,7 @@ class TestFileBasedSource(unittest.TestCase):
   def test_read_pattern_gzip(self):
     _, lines = write_data(200)
     splits = [0, 34, 100, 140, 164, 188, 200]
-    chunks = [lines[splits[i-1]:splits[i]] for i in xrange(1, len(splits))]
+    chunks = [lines[splits[i-1]:splits[i]] for i in range(1, len(splits))]
     compressed_chunks = []
     for c in chunks:
       out = cStringIO.StringIO()
@@ -519,7 +517,7 @@ class TestFileBasedSource(unittest.TestCase):
   def test_read_auto_pattern(self):
     _, lines = write_data(200)
     splits = [0, 34, 100, 140, 164, 188, 200]
-    chunks = [lines[splits[i - 1]:splits[i]] for i in xrange(1, len(splits))]
+    chunks = [lines[splits[i - 1]:splits[i]] for i in range(1, len(splits))]
     compressed_chunks = []
     for c in chunks:
       out = cStringIO.StringIO()
@@ -538,7 +536,7 @@ class TestFileBasedSource(unittest.TestCase):
   def test_read_auto_pattern_compressed_and_uncompressed(self):
     _, lines = write_data(200)
     splits = [0, 34, 100, 140, 164, 188, 200]
-    chunks = [lines[splits[i - 1]:splits[i]] for i in xrange(1, len(splits))]
+    chunks = [lines[splits[i - 1]:splits[i]] for i in range(1, len(splits))]
     chunks_to_write = []
     for i, c in enumerate(chunks):
       if i%2 == 0:

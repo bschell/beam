@@ -18,6 +18,7 @@
 package org.apache.beam.sdk.transforms.reflect;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.sdk.util.common.ReflectHelpers.findClassLoader;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
@@ -49,6 +50,7 @@ import net.bytebuddy.implementation.bytecode.Throw;
 import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import net.bytebuddy.implementation.bytecode.assign.Assigner.Typing;
 import net.bytebuddy.implementation.bytecode.assign.TypeCasting;
+import net.bytebuddy.implementation.bytecode.constant.NullConstant;
 import net.bytebuddy.implementation.bytecode.constant.TextConstant;
 import net.bytebuddy.implementation.bytecode.member.FieldAccess;
 import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
@@ -67,13 +69,20 @@ import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.DoFn.ProcessElement;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.OnTimerMethod;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.Cases;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.ElementParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.FinishBundleContextParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.OnTimerContextParameter;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.OutputReceiverParameter;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.PaneInfoParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.ProcessContextParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.RestrictionTrackerParameter;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.RowParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.StartBundleContextParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.StateParameter;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.TaggedOutputReceiverParameter;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.TimeDomainParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.TimerParameter;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.TimestampParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.WindowParameter;
 import org.apache.beam.sdk.transforms.splittabledofn.HasDefaultTracker;
 import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
@@ -83,12 +92,19 @@ import org.apache.beam.sdk.values.TypeDescriptor;
 /** Dynamically generates a {@link DoFnInvoker} instances for invoking a {@link DoFn}. */
 public class ByteBuddyDoFnInvokerFactory implements DoFnInvokerFactory {
 
-  public static final String CONTEXT_PARAMETER_METHOD = "context";
   public static final String START_BUNDLE_CONTEXT_PARAMETER_METHOD = "startBundleContext";
   public static final String FINISH_BUNDLE_CONTEXT_PARAMETER_METHOD = "finishBundleContext";
   public static final String PROCESS_CONTEXT_PARAMETER_METHOD = "processContext";
+  public static final String ELEMENT_PARAMETER_METHOD = "element";
+  public static final String ROW_PARAMETER_METHOD = "asRow";
+  public static final String TIMESTAMP_PARAMETER_METHOD = "timestamp";
+  public static final String TIME_DOMAIN_PARAMETER_METHOD = "timeDomain";
+  public static final String OUTPUT_ROW_RECEIVER_METHOD = "outputRowReceiver";
+  public static final String OUTPUT_PARAMETER_METHOD = "outputReceiver";
+  public static final String TAGGED_OUTPUT_PARAMETER_METHOD = "taggedOutputReceiver";
   public static final String ON_TIMER_CONTEXT_PARAMETER_METHOD = "onTimerContext";
   public static final String WINDOW_PARAMETER_METHOD = "window";
+  public static final String PANE_INFO_PARAMETER_METHOD = "paneInfo";
   public static final String PIPELINE_OPTIONS_PARAMETER_METHOD = "pipelineOptions";
   public static final String RESTRICTION_TRACKER_PARAMETER_METHOD = "restrictionTracker";
   public static final String STATE_PARAMETER_METHOD = "state";
@@ -326,7 +342,7 @@ public class ByteBuddyDoFnInvokerFactory implements DoFnInvokerFactory {
         (Class<? extends DoFnInvoker<?, ?>>)
             unloaded
                 .load(
-                    ByteBuddyDoFnInvokerFactory.class.getClassLoader(),
+                    findClassLoader(fnClass.getClassLoader()),
                     ClassLoadingStrategy.Default.INJECTION)
                 .getLoaded();
     return res;
@@ -394,7 +410,8 @@ public class ByteBuddyDoFnInvokerFactory implements DoFnInvokerFactory {
     /** Whether the target method returns non-void. */
     private final boolean targetHasReturn;
 
-    protected FieldDescription delegateField;
+    /** Starts {@code null}, initialized by {@link #prepare(InstrumentedType)}. */
+    @Nullable protected FieldDescription delegateField;
 
     private final TypeDescription doFnType;
 
@@ -493,8 +510,7 @@ public class ByteBuddyDoFnInvokerFactory implements DoFnInvokerFactory {
     protected StackManipulation afterDelegation(MethodDescription instrumentedMethod) {
       return new StackManipulation.Compound(
           Assigner.DEFAULT.assign(
-              targetMethod.getReturnType(),
-              instrumentedMethod.getReturnType(), Typing.STATIC),
+              targetMethod.getReturnType(), instrumentedMethod.getReturnType(), Typing.STATIC),
           MethodReturn.of(instrumentedMethod.getReturnType()));
     }
   }
@@ -584,6 +600,64 @@ public class ByteBuddyDoFnInvokerFactory implements DoFnInvokerFactory {
           }
 
           @Override
+          public StackManipulation dispatch(ElementParameter p) {
+            return new StackManipulation.Compound(
+                pushDelegate,
+                MethodInvocation.invoke(
+                    getExtraContextFactoryMethodDescription(ELEMENT_PARAMETER_METHOD, DoFn.class)),
+                TypeCasting.to(new TypeDescription.ForLoadedType(p.elementT().getRawType())));
+          }
+
+          @Override
+          public StackManipulation dispatch(RowParameter p) {
+            StackManipulation parameter =
+                (p.fieldAccessId() == null)
+                    ? NullConstant.INSTANCE
+                    : new TextConstant(p.fieldAccessId());
+            return new StackManipulation.Compound(
+                parameter,
+                MethodInvocation.invoke(
+                    getExtraContextFactoryMethodDescription(ROW_PARAMETER_METHOD, String.class)));
+          }
+
+          @Override
+          public StackManipulation dispatch(TimestampParameter p) {
+            return new StackManipulation.Compound(
+                pushDelegate,
+                MethodInvocation.invoke(
+                    getExtraContextFactoryMethodDescription(
+                        TIMESTAMP_PARAMETER_METHOD, DoFn.class)));
+          }
+
+          @Override
+          public StackManipulation dispatch(TimeDomainParameter p) {
+            return new StackManipulation.Compound(
+                pushDelegate,
+                MethodInvocation.invoke(
+                    getExtraContextFactoryMethodDescription(
+                        TIME_DOMAIN_PARAMETER_METHOD, DoFn.class)));
+          }
+
+          @Override
+          public StackManipulation dispatch(OutputReceiverParameter p) {
+            String method =
+                p.isRowReceiver() ? OUTPUT_ROW_RECEIVER_METHOD : OUTPUT_PARAMETER_METHOD;
+            return new StackManipulation.Compound(
+                pushDelegate,
+                MethodInvocation.invoke(
+                    getExtraContextFactoryMethodDescription(method, DoFn.class)));
+          }
+
+          @Override
+          public StackManipulation dispatch(TaggedOutputReceiverParameter p) {
+            return new StackManipulation.Compound(
+                pushDelegate,
+                MethodInvocation.invoke(
+                    getExtraContextFactoryMethodDescription(
+                        TAGGED_OUTPUT_PARAMETER_METHOD, DoFn.class)));
+          }
+
+          @Override
           public StackManipulation dispatch(OnTimerContextParameter p) {
             return new StackManipulation.Compound(
                 pushDelegate,
@@ -597,6 +671,15 @@ public class ByteBuddyDoFnInvokerFactory implements DoFnInvokerFactory {
             return new StackManipulation.Compound(
                 simpleExtraContextParameter(WINDOW_PARAMETER_METHOD),
                 TypeCasting.to(new TypeDescription.ForLoadedType(p.windowT().getRawType())));
+          }
+
+          @Override
+          public StackManipulation dispatch(PaneInfoParameter p) {
+            return new StackManipulation.Compound(
+                pushDelegate,
+                MethodInvocation.invoke(
+                    getExtraContextFactoryMethodDescription(
+                        PANE_INFO_PARAMETER_METHOD, DoFn.class)));
           }
 
           @Override
@@ -848,31 +931,25 @@ public class ByteBuddyDoFnInvokerFactory implements DoFnInvokerFactory {
 
     @Override
     public ByteCodeAppender appender(final Target implementationTarget) {
-      return new ByteCodeAppender() {
-        @Override
-        public Size apply(
-            MethodVisitor methodVisitor,
-            Context implementationContext,
-            MethodDescription instrumentedMethod) {
-          StackManipulation.Size size =
-              new StackManipulation.Compound(
-                      // Load the this reference
-                      MethodVariableAccess.REFERENCE.loadFrom(0),
-                      // Load the delegate argument
-                      MethodVariableAccess.REFERENCE.loadFrom(1),
-                      // Invoke the super constructor (default constructor of Object)
-                      MethodInvocation.invoke(
-                          new TypeDescription.ForLoadedType(DoFnInvokerBase.class)
-                              .getDeclaredMethods()
-                              .filter(
-                                  ElementMatchers.isConstructor()
-                                      .and(ElementMatchers.takesArguments(DoFn.class)))
-                              .getOnly()),
-                      // Return void.
-                      MethodReturn.VOID)
-                  .apply(methodVisitor, implementationContext);
-          return new Size(size.getMaximalSize(), instrumentedMethod.getStackSize());
-        }
+      return (methodVisitor, implementationContext, instrumentedMethod) -> {
+        StackManipulation.Size size =
+            new StackManipulation.Compound(
+                    // Load the this reference
+                    MethodVariableAccess.REFERENCE.loadFrom(0),
+                    // Load the delegate argument
+                    MethodVariableAccess.REFERENCE.loadFrom(1),
+                    // Invoke the super constructor (default constructor of Object)
+                    MethodInvocation.invoke(
+                        new TypeDescription.ForLoadedType(DoFnInvokerBase.class)
+                            .getDeclaredMethods()
+                            .filter(
+                                ElementMatchers.isConstructor()
+                                    .and(ElementMatchers.takesArguments(DoFn.class)))
+                            .getOnly()),
+                    // Return void.
+                    MethodReturn.VOID)
+                .apply(methodVisitor, implementationContext);
+        return new ByteCodeAppender.Size(size.getMaximalSize(), instrumentedMethod.getStackSize());
       };
     }
   }

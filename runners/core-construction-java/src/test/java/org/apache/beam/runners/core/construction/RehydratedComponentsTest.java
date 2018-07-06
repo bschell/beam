@@ -22,6 +22,7 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.theInstance;
 import static org.junit.Assert.assertThat;
 
+import org.apache.beam.model.pipeline.v1.RunnerApi.Environment;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.NullableCoder;
 import org.apache.beam.sdk.coders.VarIntCoder;
@@ -44,6 +45,7 @@ public class RehydratedComponentsTest {
   @Test
   public void testSimpleCoder() throws Exception {
     SdkComponents sdkComponents = SdkComponents.create();
+    sdkComponents.registerEnvironment(Environment.newBuilder().setUrl("java").build());
     Coder<?> coder = VarIntCoder.of();
     String id = sdkComponents.registerCoder(coder);
     RehydratedComponents rehydratedComponents =
@@ -57,6 +59,7 @@ public class RehydratedComponentsTest {
   @Test
   public void testCompoundCoder() throws Exception {
     SdkComponents sdkComponents = SdkComponents.create();
+    sdkComponents.registerEnvironment(Environment.newBuilder().setUrl("java").build());
     Coder<?> coder = VarIntCoder.of();
     Coder<?> compoundCoder = NullableCoder.of(coder);
     String compoundCoderId = sdkComponents.registerCoder(compoundCoder);
@@ -80,6 +83,7 @@ public class RehydratedComponentsTest {
   @Test
   public void testWindowingStrategy() throws Exception {
     SdkComponents sdkComponents = SdkComponents.create();
+    sdkComponents.registerEnvironment(Environment.newBuilder().setUrl("java").build());
     WindowingStrategy windowingStrategy =
         WindowingStrategy.of(FixedWindows.of(Duration.millis(1)))
             .withAllowedLateness(Duration.standardSeconds(4));
@@ -92,5 +96,19 @@ public class RehydratedComponentsTest {
     assertThat(
         rehydratedComponents.getWindowingStrategy(id),
         theInstance((WindowingStrategy) rehydratedStrategy));
+  }
+
+  @Test
+  public void testEnvironment() {
+    SdkComponents sdkComponents = SdkComponents.create();
+    sdkComponents.registerEnvironment(Environment.newBuilder().setUrl("java").build());
+    Environment env = Environment.newBuilder().setUrl("java_test").build();
+    String id = sdkComponents.registerEnvironment(env);
+    RehydratedComponents rehydratedComponents =
+        RehydratedComponents.forComponents(sdkComponents.toComponents());
+
+    Environment rehydratedEnv = rehydratedComponents.getEnvironment(id);
+    assertThat(rehydratedEnv, equalTo(env));
+    assertThat(rehydratedComponents.getEnvironment(id), theInstance(rehydratedEnv));
   }
 }

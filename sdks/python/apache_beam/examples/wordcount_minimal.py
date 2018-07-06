@@ -56,6 +56,11 @@ from apache_beam.io import WriteToText
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.options.pipeline_options import SetupOptions
 
+try:
+  unicode           # pylint: disable=unicode-builtin
+except NameError:
+  unicode = str
+
 
 def run(argv=None):
   """Main entry point; defines and runs the wordcount pipeline."""
@@ -106,7 +111,11 @@ def run(argv=None):
         | 'GroupAndSum' >> beam.CombinePerKey(sum))
 
     # Format the counts into a PCollection of strings.
-    output = counts | 'Format' >> beam.Map(lambda (w, c): '%s: %s' % (w, c))
+    def format_result(word_count):
+      (word, count) = word_count
+      return '%s: %s' % (word, count)
+
+    output = counts | 'Format' >> beam.Map(format_result)
 
     # Write the output using a "Write" transform that has side effects.
     # pylint: disable=expression-not-assigned

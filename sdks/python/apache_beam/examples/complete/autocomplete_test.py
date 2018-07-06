@@ -17,6 +17,8 @@
 
 """Test for the autocomplete example."""
 
+from __future__ import absolute_import
+
 import unittest
 
 import apache_beam as beam
@@ -35,7 +37,7 @@ class AutocompleteTest(unittest.TestCase):
       words = p | beam.Create(self.WORDS)
       result = words | autocomplete.TopPerPrefix(5)
       # values must be hashable for now
-      result = result | beam.Map(lambda (k, vs): (k, tuple(vs)))
+      result = result | beam.Map(lambda k_vs: (k_vs[0], tuple(k_vs[1])))
       assert_that(result, equal_to(
           [
               ('t', ((3, 'to'), (2, 'this'), (1, 'that'))),

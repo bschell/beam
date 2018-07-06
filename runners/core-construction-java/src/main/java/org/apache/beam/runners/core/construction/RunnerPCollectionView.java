@@ -21,8 +21,8 @@ package org.apache.beam.runners.core.construction;
 import java.util.Map;
 import java.util.Objects;
 import javax.annotation.Nullable;
+import org.apache.beam.model.pipeline.v1.RunnerApi.SideInput;
 import org.apache.beam.sdk.coders.Coder;
-import org.apache.beam.sdk.common.runner.v1.RunnerApi.SideInput;
 import org.apache.beam.sdk.transforms.ViewFn;
 import org.apache.beam.sdk.transforms.windowing.WindowMappingFn;
 import org.apache.beam.sdk.util.WindowedValue;
@@ -38,13 +38,11 @@ class RunnerPCollectionView<T> extends PValueBase implements PCollectionView<T> 
   private final TupleTag<Iterable<WindowedValue<?>>> tag;
   private final ViewFn<Iterable<WindowedValue<?>>, T> viewFn;
   private final WindowMappingFn<?> windowMappingFn;
-  private final WindowingStrategy<?, ?> windowingStrategy;
-  private final Coder<Iterable<WindowedValue<?>>> coder;
+  private final @Nullable WindowingStrategy<?, ?> windowingStrategy;
+  private final @Nullable Coder<Iterable<WindowedValue<?>>> coder;
   private final transient PCollection<?> pCollection;
 
-  /**
-   * Create a new {@link RunnerPCollectionView} from the provided components.
-   */
+  /** Create a new {@link RunnerPCollectionView} from the provided components. */
   RunnerPCollectionView(
       PCollection<?> pCollection,
       TupleTag<Iterable<WindowedValue<?>>> tag,
@@ -92,8 +90,8 @@ class RunnerPCollectionView<T> extends PValueBase implements PCollectionView<T> 
 
   @Override
   public Map<TupleTag<?>, PValue> expand() {
-    throw new UnsupportedOperationException(String.format(
-        "A %s cannot be expanded", RunnerPCollectionView.class.getSimpleName()));
+    throw new UnsupportedOperationException(
+        String.format("A %s cannot be expanded", RunnerPCollectionView.class.getSimpleName()));
   }
 
   @Override

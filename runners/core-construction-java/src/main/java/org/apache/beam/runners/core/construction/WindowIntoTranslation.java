@@ -21,15 +21,15 @@ package org.apache.beam.runners.core.construction;
 import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.auto.service.AutoService;
-import com.google.protobuf.Any;
 import com.google.protobuf.InvalidProtocolBufferException;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.Map;
+import javax.annotation.Nullable;
+import org.apache.beam.model.pipeline.v1.RunnerApi;
+import org.apache.beam.model.pipeline.v1.RunnerApi.FunctionSpec;
+import org.apache.beam.model.pipeline.v1.RunnerApi.WindowIntoPayload;
 import org.apache.beam.runners.core.construction.PTransformTranslation.TransformPayloadTranslator;
-import org.apache.beam.sdk.common.runner.v1.RunnerApi;
-import org.apache.beam.sdk.common.runner.v1.RunnerApi.FunctionSpec;
-import org.apache.beam.sdk.common.runner.v1.RunnerApi.WindowIntoPayload;
 import org.apache.beam.sdk.runners.AppliedPTransform;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.windowing.Window;
@@ -46,7 +46,7 @@ public class WindowIntoTranslation {
 
     @Override
     public String getUrn(Assign<?> transform) {
-      return PTransformTranslation.WINDOW_TRANSFORM_URN;
+      return PTransformTranslation.ASSIGN_WINDOWS_TRANSFORM_URN;
     }
 
     @Override
@@ -54,8 +54,8 @@ public class WindowIntoTranslation {
         AppliedPTransform<?, ?, Window.Assign<?>> transform, SdkComponents components) {
       return FunctionSpec.newBuilder()
           .setUrn("urn:beam:transform:window:v1")
-          .setParameter(
-              Any.pack(WindowIntoTranslation.toProto(transform.getTransform(), components)))
+          .setPayload(
+              WindowIntoTranslation.toProto(transform.getTransform(), components).toByteString())
           .build();
     }
   }
@@ -69,46 +69,42 @@ public class WindowIntoTranslation {
   public static WindowIntoPayload getWindowIntoPayload(AppliedPTransform<?, ?, ?> application) {
     RunnerApi.PTransform transformProto;
     try {
+      SdkComponents components = SdkComponents.create(application.getPipeline().getOptions());
       transformProto =
-          PTransformTranslation.toProto(
-              application,
-              Collections.<AppliedPTransform<?, ?, ?>>emptyList(),
-              SdkComponents.create());
+          PTransformTranslation.toProto(application, Collections.emptyList(), components);
     } catch (IOException exc) {
       throw new RuntimeException(exc);
     }
 
     checkArgument(
-        PTransformTranslation.WINDOW_TRANSFORM_URN.equals(transformProto.getSpec().getUrn()),
+        PTransformTranslation.ASSIGN_WINDOWS_TRANSFORM_URN.equals(
+            transformProto.getSpec().getUrn()),
         "Illegal attempt to extract %s from transform %s with name \"%s\" and URN \"%s\"",
         Window.Assign.class.getSimpleName(),
         application.getTransform(),
         application.getFullName(),
         transformProto.getSpec().getUrn());
 
-    WindowIntoPayload windowIntoPayload;
     try {
-      return transformProto.getSpec().getParameter().unpack(WindowIntoPayload.class);
+      return WindowIntoPayload.parseFrom(transformProto.getSpec().getPayload());
     } catch (InvalidProtocolBufferException exc) {
       throw new IllegalStateException(
           String.format(
               "%s translated %s with URN '%s' but payload was not a %s",
               PTransformTranslation.class.getSimpleName(),
               application,
-              PTransformTranslation.WINDOW_TRANSFORM_URN,
+              PTransformTranslation.ASSIGN_WINDOWS_TRANSFORM_URN,
               WindowIntoPayload.class.getSimpleName()),
           exc);
     }
   }
 
-  public static WindowFn<?, ?> getWindowFn(AppliedPTransform<?, ?, ?> application) {
+  public static @Nullable WindowFn<?, ?> getWindowFn(AppliedPTransform<?, ?, ?> application) {
     return WindowingStrategyTranslation.windowFnFromProto(
         getWindowIntoPayload(application).getWindowFn());
   }
 
-  /**
-   * A {@link TransformPayloadTranslator} for {@link Window}.
-   */
+  /** A {@link TransformPayloadTranslator} for {@link Window}. */
   public static class WindowIntoPayloadTranslator
       implements PTransformTranslation.TransformPayloadTranslator<Window.Assign<?>> {
     public static TransformPayloadTranslator create() {
@@ -119,7 +115,7 @@ public class WindowIntoTranslation {
 
     @Override
     public String getUrn(Window.Assign<?> transform) {
-      return PTransformTranslation.WINDOW_TRANSFORM_URN;
+      return PTransformTranslation.ASSIGN_WINDOWS_TRANSFORM_URN;
     }
 
     @Override
@@ -128,7 +124,7 @@ public class WindowIntoTranslation {
       WindowIntoPayload payload = toProto(transform.getTransform(), components);
       return RunnerApi.FunctionSpec.newBuilder()
           .setUrn(getUrn(transform.getTransform()))
-          .setParameter(Any.pack(payload))
+          .setPayload(payload.toByteString())
           .build();
     }
   }

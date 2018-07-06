@@ -22,7 +22,7 @@
   <parent>
     <groupId>org.apache.beam</groupId>
     <artifactId>beam-examples-parent</artifactId>
-    <version>2.2.0-SNAPSHOT</version>
+    <version>2.6.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -95,7 +95,7 @@
       <dependencies>
         <dependency>
           <groupId>org.apache.beam</groupId>
-          <artifactId>beam-runners-flink_2.10</artifactId>
+          <artifactId>beam-runners-flink_2.11</artifactId>
           <scope>runtime</scope>
           <exclusions>
             <exclusion>
@@ -110,6 +110,10 @@
     <!-- Include the Apache Spark runner -P spark-runner -->
     <profile>
       <id>spark-runner</id>
+      <properties>
+        <!-- Spark uses a different netty version than Beam's. -->
+        <netty.version>4.1.17.Final</netty.version>
+      </properties>
       <dependencies>
         <dependency>
           <groupId>org.apache.beam</groupId>
@@ -123,12 +127,12 @@
         </dependency>
         <dependency>
           <groupId>org.apache.spark</groupId>
-          <artifactId>spark-streaming_2.10</artifactId>
+          <artifactId>spark-streaming_2.11</artifactId>
           <scope>runtime</scope>
         </dependency>
         <dependency>
           <groupId>org.apache.spark</groupId>
-          <artifactId>spark-core_2.10</artifactId>
+          <artifactId>spark-core_2.11</artifactId>
           <scope>runtime</scope>
           <exclusions>
             <exclusion>
@@ -147,6 +151,18 @@
         <dependency>
           <groupId>org.apache.beam</groupId>
           <artifactId>beam-runners-google-cloud-dataflow-java</artifactId>
+          <scope>runtime</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+
+    <!-- Include the Apache Samza runner -P samza-runner -->
+    <profile>
+      <id>samza-runner</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.apache.beam</groupId>
+          <artifactId>beam-runners-samza_2.11</artifactId>
           <scope>runtime</scope>
         </dependency>
       </dependencies>
@@ -365,20 +381,7 @@
   </profiles>
 
   <build>
-
     <plugins>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-surefire-plugin</artifactId>
-        <configuration>
-          <systemPropertyVariables>
-            <beamUseDummyRunner />
-            <beamTestPipelineOptions>
-            </beamTestPipelineOptions>
-          </systemPropertyVariables>
-        </configuration>
-      </plugin>
-
       <!-- Coverage analysis for unit tests. -->
       <plugin>
         <groupId>org.jacoco</groupId>
@@ -448,6 +451,11 @@
     </dependency>
 
     <dependency>
+      <groupId>com.google.oauth-client</groupId>
+      <artifactId>google-oauth-client</artifactId>
+    </dependency>
+
+    <dependency>
       <groupId>com.google.cloud.bigdataoss</groupId>
       <artifactId>util</artifactId>
     </dependency>
@@ -504,12 +512,23 @@
       <optional>true</optional>
     </dependency>
 
+    <dependency>
+      <groupId>com.google.auto.value</groupId>
+      <artifactId>auto-value</artifactId>
+      <scope>provided</scope>
+    </dependency>
+
     <!-- Hamcrest and JUnit are required dependencies of PAssert,
          which is used in the main code of DebuggingWordCount example. -->
 
     <dependency>
       <groupId>org.hamcrest</groupId>
-      <artifactId>hamcrest-all</artifactId>
+      <artifactId>hamcrest-core</artifactId>
+    </dependency>
+    
+    <dependency>
+      <groupId>org.hamcrest</groupId>
+      <artifactId>hamcrest-library</artifactId>
     </dependency>
 
     <dependency>
@@ -518,7 +537,6 @@
     </dependency>
 
     <!-- Test dependencies -->
-
     <!--
       For testing the example itself, use the direct runner. This is separate from
       the use of ValidatesRunner tests for testing a particular runner.
@@ -538,7 +556,7 @@
 
     <dependency>
       <groupId>org.mockito</groupId>
-      <artifactId>mockito-all</artifactId>
+      <artifactId>mockito-core</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>

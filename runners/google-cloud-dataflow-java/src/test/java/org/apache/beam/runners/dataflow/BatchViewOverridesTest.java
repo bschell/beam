@@ -52,12 +52,11 @@ import org.junit.rules.ExpectedException;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/**
- * Tests for {@link BatchViewOverrides}.
- */
+/** Tests for {@link BatchViewOverrides}. */
 @RunWith(JUnit4.class)
 public class BatchViewOverridesTest {
   @Rule public ExpectedException thrown = ExpectedException.none();
+
   @Test
   public void testBatchViewAsSingletonToIsmRecord() throws Exception {
     DoFnTester<
@@ -71,7 +70,7 @@ public class BatchViewOverridesTest {
     assertThat(
         doFnTester.processBundle(
             ImmutableList.of(
-                KV.<Integer, Iterable<KV<GlobalWindow, WindowedValue<String>>>>of(
+                KV.of(
                     0, ImmutableList.of(KV.of(GlobalWindow.INSTANCE, valueInGlobalWindow("a")))))),
         contains(IsmRecord.of(ImmutableList.of(GlobalWindow.INSTANCE), valueInGlobalWindow("a"))));
   }
@@ -91,7 +90,7 @@ public class BatchViewOverridesTest {
     thrown.expectMessage("found for singleton within window");
     doFnTester.processBundle(
         ImmutableList.of(
-            KV.<Integer, Iterable<KV<GlobalWindow, WindowedValue<String>>>>of(
+            KV.of(
                 0,
                 ImmutableList.of(
                     KV.of(GlobalWindow.INSTANCE, valueInGlobalWindow("a")),
@@ -193,7 +192,7 @@ public class BatchViewOverridesTest {
         IsmRecordCoder.of(
             1,
             2,
-            ImmutableList.<Coder<?>>of(
+            ImmutableList.of(
                 MetadataKeyCoder.of(keyCoder), IntervalWindow.getCoder(), BigEndianLongCoder.of()),
             FullWindowedValueCoder.of(VarLongCoder.of(), windowCoder));
 
@@ -325,7 +324,7 @@ public class BatchViewOverridesTest {
         IsmRecordCoder.of(
             1,
             2,
-            ImmutableList.<Coder<?>>of(
+            ImmutableList.of(
                 MetadataKeyCoder.of(keyCoder), IntervalWindow.getCoder(), BigEndianLongCoder.of()),
             FullWindowedValueCoder.of(VarLongCoder.of(), windowCoder));
 
@@ -368,8 +367,6 @@ public class BatchViewOverridesTest {
 
   @Test
   public void testToIsmMetadataRecordForSizeDoFn() throws Exception {
-    TupleTag<KV<Integer, KV<IntervalWindow, Long>>> outputForSizeTag = new TupleTag<>();
-    TupleTag<KV<Integer, KV<IntervalWindow, Long>>> outputForEntrySetTag = new TupleTag<>();
 
     Coder<Long> keyCoder = VarLongCoder.of();
     Coder<IntervalWindow> windowCoder = IntervalWindow.getCoder();
@@ -378,7 +375,7 @@ public class BatchViewOverridesTest {
         IsmRecordCoder.of(
             1,
             2,
-            ImmutableList.<Coder<?>>of(
+            ImmutableList.of(
                 MetadataKeyCoder.of(keyCoder), IntervalWindow.getCoder(), BigEndianLongCoder.of()),
             FullWindowedValueCoder.of(VarLongCoder.of(), windowCoder));
 
@@ -419,8 +416,6 @@ public class BatchViewOverridesTest {
 
   @Test
   public void testToIsmMetadataRecordForKeyDoFn() throws Exception {
-    TupleTag<KV<Integer, KV<IntervalWindow, Long>>> outputForSizeTag = new TupleTag<>();
-    TupleTag<KV<Integer, KV<IntervalWindow, Long>>> outputForEntrySetTag = new TupleTag<>();
 
     Coder<Long> keyCoder = VarLongCoder.of();
     Coder<IntervalWindow> windowCoder = IntervalWindow.getCoder();
@@ -429,7 +424,7 @@ public class BatchViewOverridesTest {
         IsmRecordCoder.of(
             1,
             2,
-            ImmutableList.<Coder<?>>of(
+            ImmutableList.of(
                 MetadataKeyCoder.of(keyCoder), IntervalWindow.getCoder(), BigEndianLongCoder.of()),
             FullWindowedValueCoder.of(VarLongCoder.of(), windowCoder));
 

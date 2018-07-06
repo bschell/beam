@@ -35,15 +35,15 @@ import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
 
 /**
- * This transform takes in key-value pairs of {@link TableRow} entries and the
- * {@link TableDestination} it should be written to. The BigQuery streaming-write service is used
- * to stream these writes to the appropriate table.
+ * This transform takes in key-value pairs of {@link TableRow} entries and the {@link
+ * TableDestination} it should be written to. The BigQuery streaming-write service is used to stream
+ * these writes to the appropriate table.
  *
  * <p>This transform assumes that all destination tables already exist by the time it sees a write
  * for that table.
  */
-public class StreamingWriteTables extends PTransform<
-    PCollection<KV<TableDestination, TableRow>>, WriteResult> {
+public class StreamingWriteTables
+    extends PTransform<PCollection<KV<TableDestination, TableRow>>, WriteResult> {
   private BigQueryServices bigQueryServices;
   private InsertRetryPolicy retryPolicy;
 
@@ -79,10 +79,11 @@ public class StreamingWriteTables extends PTransform<
     // get good batching into BigQuery's insert calls, and enough that we can max out the
     // streaming insert quota.
     PCollection<KV<ShardedKey<String>, TableRowInfo>> tagged =
-        input.apply("ShardTableWrites", ParDo.of
-        (new GenerateShardedTable(50)))
-        .setCoder(KvCoder.of(ShardedKeyCoder.of(StringUtf8Coder.of()), TableRowJsonCoder.of()))
-        .apply("TagWithUniqueIds", ParDo.of(new TagWithUniqueIds()));
+        input
+            .apply("ShardTableWrites", ParDo.of(new GenerateShardedTable(50)))
+            .setCoder(KvCoder.of(ShardedKeyCoder.of(StringUtf8Coder.of()), TableRowJsonCoder.of()))
+            .apply("TagWithUniqueIds", ParDo.of(new TagWithUniqueIds()))
+            .setCoder(KvCoder.of(ShardedKeyCoder.of(StringUtf8Coder.of()), TableRowInfoCoder.of()));
 
     // To prevent having the same TableRow processed more than once with regenerated
     // different unique ids, this implementation relies on "checkpointing", which is
@@ -90,18 +91,20 @@ public class StreamingWriteTables extends PTransform<
     // performed by Reshuffle.
     TupleTag<Void> mainOutputTag = new TupleTag<>("mainOutput");
     TupleTag<TableRow> failedInsertsTag = new TupleTag<>("failedInserts");
-    PCollectionTuple tuple = tagged
-        .setCoder(KvCoder.of(ShardedKeyCoder.of(StringUtf8Coder.of()), TableRowInfoCoder.of()))
-        .apply(Reshuffle.<ShardedKey<String>, TableRowInfo>of())
-        // Put in the global window to ensure that DynamicDestinations side inputs are accessed
-        // correctly.
-        .apply("GlobalWindow",
-            Window.<KV<ShardedKey<String>, TableRowInfo>>into(new GlobalWindows())
-            .triggering(DefaultTrigger.of()).discardingFiredPanes())
-        .apply("StreamingWrite",
-            ParDo.of(
-                new StreamingWriteFn(bigQueryServices, retryPolicy, failedInsertsTag))
-            .withOutputTags(mainOutputTag, TupleTagList.of(failedInsertsTag)));
+    PCollectionTuple tuple =
+        tagged
+            .apply(Reshuffle.of())
+            // Put in the global window to ensure that DynamicDestinations side inputs are accessed
+            // correctly.
+            .apply(
+                "GlobalWindow",
+                Window.<KV<ShardedKey<String>, TableRowInfo>>into(new GlobalWindows())
+                    .triggering(DefaultTrigger.of())
+                    .discardingFiredPanes())
+            .apply(
+                "StreamingWrite",
+                ParDo.of(new StreamingWriteFn(bigQueryServices, retryPolicy, failedInsertsTag))
+                    .withOutputTags(mainOutputTag, TupleTagList.of(failedInsertsTag)));
     PCollection<TableRow> failedInserts = tuple.get(failedInsertsTag);
     failedInserts.setCoder(TableRowJsonCoder.of());
     return WriteResult.in(input.getPipeline(), failedInsertsTag, failedInserts);

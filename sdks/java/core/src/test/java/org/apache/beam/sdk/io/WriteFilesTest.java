@@ -21,21 +21,24 @@ import static com.google.common.base.MoreObjects.firstNonNull;
 import static org.apache.beam.sdk.transforms.display.DisplayDataMatchers.hasDisplayItem;
 import static org.apache.beam.sdk.transforms.display.DisplayDataMatchers.includesDisplayDataFor;
 import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
+import com.google.common.base.Charsets;
 import com.google.common.base.Optional;
 import com.google.common.collect.Lists;
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
 import java.io.IOException;
-import java.nio.file.Paths;
+import java.nio.file.Files;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -48,11 +51,11 @@ import java.util.regex.Pattern;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.io.DefaultFilenamePolicy.Params;
-import org.apache.beam.sdk.io.FileBasedSink.CompressionType;
 import org.apache.beam.sdk.io.FileBasedSink.DynamicDestinations;
 import org.apache.beam.sdk.io.FileBasedSink.FilenamePolicy;
 import org.apache.beam.sdk.io.FileBasedSink.OutputFileHints;
 import org.apache.beam.sdk.io.SimpleSink.SimpleWriter;
+import org.apache.beam.sdk.io.fs.EmptyMatchTreatment;
 import org.apache.beam.sdk.io.fs.MatchResult.Metadata;
 import org.apache.beam.sdk.io.fs.ResolveOptions.StandardResolveOptions;
 import org.apache.beam.sdk.io.fs.ResourceId;
@@ -70,9 +73,9 @@ import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.SimpleFunction;
 import org.apache.beam.sdk.transforms.Top;
+import org.apache.beam.sdk.transforms.Values;
 import org.apache.beam.sdk.transforms.View;
 import org.apache.beam.sdk.transforms.display.DisplayData;
-import org.apache.beam.sdk.transforms.display.DisplayData.Builder;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
 import org.apache.beam.sdk.transforms.windowing.IntervalWindow;
@@ -83,7 +86,9 @@ import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollection.IsBounded;
 import org.apache.beam.sdk.values.PCollectionView;
+import org.apache.beam.sdk.values.PDone;
 import org.apache.commons.compress.utils.Sets;
+import org.hamcrest.Matchers;
 import org.joda.time.Duration;
 import org.joda.time.format.DateTimeFormatter;
 import org.joda.time.format.ISODateTimeFormat;
@@ -151,14 +156,21 @@ public class WriteFilesTest {
     public PCollection<T> expand(PCollection<T> input) {
       return input
           .apply(window)
-          .apply(ParDo.of(new AddArbitraryKey<T>()))
-          .apply(GroupByKey.<Integer, T>create())
-          .apply(ParDo.of(new RemoveArbitraryKey<T>()));
+          .apply(ParDo.of(new AddArbitraryKey<>()))
+          .apply(GroupByKey.create())
+          .apply(ParDo.of(new RemoveArbitraryKey<>()));
     }
   }
 
-  private String appendToTempFolder(String filename) {
-    return Paths.get(tmpFolder.getRoot().getPath(), filename).toString();
+  private static class VerifyFilesExist<DestinationT>
+      extends PTransform<PCollection<KV<DestinationT, String>>, PDone> {
+    @Override
+    public PDone expand(PCollection<KV<DestinationT, String>> input) {
+      input
+          .apply(Values.create())
+          .apply(FileIO.matchAll().withEmptyMatchTreatment(EmptyMatchTreatment.DISALLOW));
+      return PDone.in(input.getPipeline());
+    }
   }
 
   private String getBaseOutputFilename() {
@@ -184,11 +196,15 @@ public class WriteFilesTest {
   @Category(NeedsRunner.class)
   public void testEmptyWrite() throws IOException {
     runWrite(
-        Collections.<String>emptyList(),
+        Collections.emptyList(),
         IDENTITY_MAP,
         getBaseOutputFilename(),
         WriteFiles.to(makeSimpleSink()));
-    checkFileContents(getBaseOutputFilename(), Collections.<String>emptyList(), Optional.of(1));
+    checkFileContents(
+        getBaseOutputFilename(),
+        Collections.emptyList(),
+        Optional.of(1),
+        true /* expectRemovedTempDirectory */);
   }
 
   /**
@@ -238,11 +254,14 @@ public class WriteFilesTest {
     WriteFiles<String, ?, String> write = WriteFiles.to(sink).withSharding(new LargestInt());
     p.apply(Create.timestamped(inputs, timestamps).withCoder(StringUtf8Coder.of()))
         .apply(IDENTITY_MAP)
-        .apply(write);
+        .apply(write)
+        .getPerDestinationOutputFilenames()
+        .apply(new VerifyFilesExist<>());
 
     p.run();
 
-    checkFileContents(getBaseOutputFilename(), inputs, Optional.of(3));
+    checkFileContents(
+        getBaseOutputFilename(), inputs, Optional.of(3), true /* expectRemovedTempDirectory */);
   }
 
   /**
@@ -280,7 +299,7 @@ public class WriteFilesTest {
             "Frisky finch");
     runWrite(
         inputs,
-        new WindowAndReshuffle<>(Window.<String>into(FixedWindows.of(Duration.millis(2)))),
+        new WindowAndReshuffle<>(Window.into(FixedWindows.of(Duration.millis(2)))),
         getBaseOutputFilename(),
         WriteFiles.to(makeSimpleSink()));
   }
@@ -299,7 +318,7 @@ public class WriteFilesTest {
 
     runWrite(
         inputs,
-        new WindowAndReshuffle<>(Window.<String>into(Sessions.withGapDuration(Duration.millis(1)))),
+        new WindowAndReshuffle<>(Window.into(Sessions.withGapDuration(Duration.millis(1)))),
         getBaseOutputFilename(),
         WriteFiles.to(makeSimpleSink()));
   }
@@ -313,31 +332,35 @@ public class WriteFilesTest {
     }
     runWrite(
         inputs,
-        Window.<String>into(FixedWindows.of(Duration.millis(2))),
+        Window.into(FixedWindows.of(Duration.millis(2))),
         getBaseOutputFilename(),
-        WriteFiles.to(makeSimpleSink()).withMaxNumWritersPerBundle(2).withWindowedWrites());
+        WriteFiles.to(makeSimpleSink())
+            .withMaxNumWritersPerBundle(2)
+            .withWindowedWrites()
+            .withNumShards(1));
   }
 
+  @Test
   public void testBuildWrite() {
     SimpleSink<Void> sink = makeSimpleSink();
     WriteFiles<String, ?, String> write = WriteFiles.to(sink).withNumShards(3);
     assertThat((SimpleSink<Void>) write.getSink(), is(sink));
     PTransform<PCollection<String>, PCollectionView<Integer>> originalSharding =
-        write.getSharding();
+        write.getComputeNumShards();
 
-    assertThat(write.getSharding(), is(nullValue()));
-    assertThat(write.getNumShards(), instanceOf(StaticValueProvider.class));
-    assertThat(write.getNumShards().get(), equalTo(3));
-    assertThat(write.getSharding(), equalTo(originalSharding));
+    assertThat(write.getComputeNumShards(), is(nullValue()));
+    assertThat(write.getNumShardsProvider(), instanceOf(StaticValueProvider.class));
+    assertThat(write.getNumShardsProvider().get(), equalTo(3));
+    assertThat(write.getComputeNumShards(), equalTo(originalSharding));
 
     WriteFiles<String, ?, ?> write2 = write.withSharding(SHARDING_TRANSFORM);
     assertThat((SimpleSink<Void>) write2.getSink(), is(sink));
-    assertThat(write2.getSharding(), equalTo(SHARDING_TRANSFORM));
+    assertThat(write2.getComputeNumShards(), equalTo(SHARDING_TRANSFORM));
     // original unchanged
 
     WriteFiles<String, ?, ?> writeUnsharded = write2.withRunnerDeterminedSharding();
-    assertThat(writeUnsharded.getSharding(), nullValue());
-    assertThat(write.getSharding(), equalTo(originalSharding));
+    assertThat(writeUnsharded.getComputeNumShards(), nullValue());
+    assertThat(write.getComputeNumShards(), equalTo(originalSharding));
   }
 
   @Test
@@ -352,7 +375,7 @@ public class WriteFilesTest {
                     .withShardTemplate("-SS-of-NN")));
     SimpleSink<Void> sink =
         new SimpleSink<Void>(
-            getBaseOutputDirectory(), dynamicDestinations, CompressionType.UNCOMPRESSED) {
+            getBaseOutputDirectory(), dynamicDestinations, Compression.UNCOMPRESSED) {
           @Override
           public void populateDisplayData(DisplayData.Builder builder) {
             builder.add(DisplayData.item("foo", "bar"));
@@ -380,7 +403,7 @@ public class WriteFilesTest {
 
   @Test
   @Category(NeedsRunner.class)
-  public void testUnboundedNeedsSharding() {
+  public void testUnboundedWritesNeedSharding() {
     thrown.expect(IllegalArgumentException.class);
     thrown.expectMessage(
         "When applying WriteFiles to an unbounded PCollection, "
@@ -423,11 +446,6 @@ public class WriteFilesTest {
           baseOutputDirectory.resolve("file_" + destination, StandardResolveOptions.RESOLVE_FILE),
           "simple");
     }
-
-    @Override
-    public void populateDisplayData(Builder builder) {
-      super.populateDisplayData(builder);
-    }
   }
 
   @Test
@@ -452,8 +470,7 @@ public class WriteFilesTest {
       throws IOException {
     TestDestinations dynamicDestinations = new TestDestinations(getBaseOutputDirectory());
     SimpleSink<Integer> sink =
-        new SimpleSink<>(
-            getBaseOutputDirectory(), dynamicDestinations, CompressionType.UNCOMPRESSED);
+        new SimpleSink<>(getBaseOutputDirectory(), dynamicDestinations, Compression.UNCOMPRESSED);
 
     // Flag to validate that the pipeline options are passed to the Sink.
     WriteOptions options = TestPipeline.testingPipelineOptions().as(WriteOptions.class);
@@ -476,13 +493,15 @@ public class WriteFilesTest {
     WriteFiles<String, Integer, String> writeFiles = WriteFiles.to(sink).withNumShards(numShards);
 
     PCollection<String> input = p.apply(Create.timestamped(inputs, timestamps));
+    WriteFilesResult<Integer> res;
     if (!bounded) {
       input.setIsBoundedInternal(IsBounded.UNBOUNDED);
-      input = input.apply(Window.<String>into(FixedWindows.of(Duration.standardDays(1))));
-      input.apply(writeFiles.withWindowedWrites());
+      input = input.apply(Window.into(FixedWindows.of(Duration.standardDays(1))));
+      res = input.apply(writeFiles.withWindowedWrites());
     } else {
-      input.apply(writeFiles);
+      res = input.apply(writeFiles);
     }
+    res.getPerDestinationOutputFilenames().apply(new VerifyFilesExist<>());
     p.run();
 
     for (int i = 0; i < 5; ++i) {
@@ -492,7 +511,11 @@ public class WriteFilesTest {
       for (int j = i; j < numInputs; j += 5) {
         expected.add("record_" + j);
       }
-      checkFileContents(base.toString(), expected, Optional.of(numShards));
+      checkFileContents(
+          base.toString(),
+          expected,
+          Optional.of(numShards),
+          bounded /* expectRemovedTempDirectory */);
     }
   }
 
@@ -508,7 +531,7 @@ public class WriteFilesTest {
                     .withShardTemplate("-SS-of-NN")));
     SimpleSink<Void> sink =
         new SimpleSink<Void>(
-            getBaseOutputDirectory(), dynamicDestinations, CompressionType.UNCOMPRESSED) {
+            getBaseOutputDirectory(), dynamicDestinations, Compression.UNCOMPRESSED) {
           @Override
           public void populateDisplayData(DisplayData.Builder builder) {
             builder.add(DisplayData.item("foo", "bar"));
@@ -518,7 +541,7 @@ public class WriteFilesTest {
     DisplayData displayData = DisplayData.from(write);
     assertThat(displayData, hasDisplayItem("sink", sink.getClass()));
     assertThat(displayData, includesDisplayDataFor("sink", sink));
-    assertThat(displayData, hasDisplayItem("numShards", "1"));
+    assertThat(displayData, hasDisplayItem("numShards", 1));
   }
 
   @Test
@@ -533,7 +556,7 @@ public class WriteFilesTest {
                     .withShardTemplate("-SS-of-NN")));
     SimpleSink<Void> sink =
         new SimpleSink<Void>(
-            getBaseOutputDirectory(), dynamicDestinations, CompressionType.UNCOMPRESSED) {
+            getBaseOutputDirectory(), dynamicDestinations, Compression.UNCOMPRESSED) {
           @Override
           public void populateDisplayData(DisplayData.Builder builder) {
             builder.add(DisplayData.item("foo", "bar"));
@@ -656,18 +679,23 @@ public class WriteFilesTest {
     }
     p.apply(Create.timestamped(inputs, timestamps).withCoder(StringUtf8Coder.of()))
         .apply(transform)
-        .apply(write);
+        .apply(write)
+        .getPerDestinationOutputFilenames()
+        .apply(new VerifyFilesExist<>());
     p.run();
 
     Optional<Integer> numShards =
-        (write.getNumShards() != null)
-            ? Optional.of(write.getNumShards().get())
-            : Optional.<Integer>absent();
-    checkFileContents(baseName, inputs, numShards);
+        (write.getNumShardsProvider() != null && !write.getWindowedWrites())
+            ? Optional.of(write.getNumShardsProvider().get())
+            : Optional.absent();
+    checkFileContents(baseName, inputs, numShards, !write.getWindowedWrites());
   }
 
   static void checkFileContents(
-      String baseName, List<String> inputs, Optional<Integer> numExpectedShards)
+      String baseName,
+      List<String> inputs,
+      Optional<Integer> numExpectedShards,
+      boolean expectRemovedTempDirectory)
       throws IOException {
     List<File> outputFiles = Lists.newArrayList();
     final String pattern = baseName + "*";
@@ -676,6 +704,7 @@ public class WriteFilesTest {
     for (Metadata meta : metadata) {
       outputFiles.add(new File(meta.resourceId().toString()));
     }
+    assertFalse("Should have produced at least 1 output file", outputFiles.isEmpty());
     if (numExpectedShards.isPresent()) {
       assertEquals(numExpectedShards.get().intValue(), outputFiles.size());
       Pattern shardPattern = Pattern.compile("\\d{4}-of-\\d{4}");
@@ -698,8 +727,8 @@ public class WriteFilesTest {
 
     List<String> actual = Lists.newArrayList();
     for (File outputFile : outputFiles) {
-      try (BufferedReader reader = new BufferedReader(new FileReader(outputFile))) {
-        for (;;) {
+      try (BufferedReader reader = Files.newBufferedReader(outputFile.toPath(), Charsets.UTF_8)) {
+        for (; ; ) {
           String line = reader.readLine();
           if (line == null) {
             break;
@@ -711,6 +740,11 @@ public class WriteFilesTest {
       }
     }
     assertThat(actual, containsInAnyOrder(inputs.toArray()));
+    if (expectRemovedTempDirectory) {
+      assertThat(
+          Lists.newArrayList(new File(baseName).getParentFile().list()),
+          Matchers.everyItem(not(containsString(FileBasedSink.TEMP_DIRECTORY_PREFIX))));
+    }
   }
 
   /** Options for test, exposed for PipelineOptionsFactory. */
@@ -738,9 +772,9 @@ public class WriteFilesTest {
                       ctxt.output(Integer.valueOf(ctxt.element()));
                     }
                   }))
-          .apply(Top.<Integer>largest(1))
-          .apply(Flatten.<Integer>iterables())
-          .apply(View.<Integer>asSingleton());
+          .apply(Top.largest(1))
+          .apply(Flatten.iterables())
+          .apply(View.asSingleton());
     }
   }
 }

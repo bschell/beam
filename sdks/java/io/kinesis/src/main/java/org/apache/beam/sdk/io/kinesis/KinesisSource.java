@@ -21,65 +21,85 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.collect.Lists.newArrayList;
 
 import java.util.List;
-
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.SerializableCoder;
 import org.apache.beam.sdk.io.UnboundedSource;
 import org.apache.beam.sdk.options.PipelineOptions;
+import org.joda.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Represents source for single stream in Kinesis.
- */
+/** Represents source for single stream in Kinesis. */
 class KinesisSource extends UnboundedSource<KinesisRecord, KinesisReaderCheckpoint> {
 
   private static final Logger LOG = LoggerFactory.getLogger(KinesisSource.class);
 
-  private final KinesisClientProvider kinesis;
+  private final AWSClientsProvider awsClientsProvider;
+  private final String streamName;
+  private final Duration upToDateThreshold;
   private CheckpointGenerator initialCheckpointGenerator;
+  private final Integer limit;
 
-  public KinesisSource(KinesisClientProvider kinesis, String streamName,
-      StartingPoint startingPoint) {
-    this(kinesis, new DynamicCheckpointGenerator(streamName, startingPoint));
+  KinesisSource(
+      AWSClientsProvider awsClientsProvider,
+      String streamName,
+      StartingPoint startingPoint,
+      Duration upToDateThreshold,
+      Integer limit) {
+    this(
+        awsClientsProvider,
+        new DynamicCheckpointGenerator(streamName, startingPoint),
+        streamName,
+        upToDateThreshold,
+        limit);
   }
 
-  private KinesisSource(KinesisClientProvider kinesisClientProvider,
-      CheckpointGenerator initialCheckpoint) {
-    this.kinesis = kinesisClientProvider;
+  private KinesisSource(
+      AWSClientsProvider awsClientsProvider,
+      CheckpointGenerator initialCheckpoint,
+      String streamName,
+      Duration upToDateThreshold,
+      Integer limit) {
+    this.awsClientsProvider = awsClientsProvider;
     this.initialCheckpointGenerator = initialCheckpoint;
+    this.streamName = streamName;
+    this.upToDateThreshold = upToDateThreshold;
+    this.limit = limit;
     validate();
   }
 
   /**
-   * Generate splits for reading from the stream.
-   * Basically, it'll try to evenly split set of shards in the stream into
-   * {@code desiredNumSplits} partitions. Each partition is then a split.
+   * Generate splits for reading from the stream. Basically, it'll try to evenly split set of shards
+   * in the stream into {@code desiredNumSplits} partitions. Each partition is then a split.
    */
   @Override
-  public List<KinesisSource> split(int desiredNumSplits,
-      PipelineOptions options) throws Exception {
+  public List<KinesisSource> split(int desiredNumSplits, PipelineOptions options) throws Exception {
     KinesisReaderCheckpoint checkpoint =
-        initialCheckpointGenerator.generate(SimplifiedKinesisClient.from(kinesis));
+        initialCheckpointGenerator.generate(
+            SimplifiedKinesisClient.from(awsClientsProvider, limit));
 
     List<KinesisSource> sources = newArrayList();
 
     for (KinesisReaderCheckpoint partition : checkpoint.splitInto(desiredNumSplits)) {
-      sources.add(new KinesisSource(
-          kinesis,
-          new StaticCheckpointGenerator(partition)));
+      sources.add(
+          new KinesisSource(
+              awsClientsProvider,
+              new StaticCheckpointGenerator(partition),
+              streamName,
+              upToDateThreshold,
+              limit));
     }
     return sources;
   }
 
   /**
-   * Creates reader based on given {@link KinesisReaderCheckpoint}.
-   * If {@link KinesisReaderCheckpoint} is not given, then we use
-   * {@code initialCheckpointGenerator} to generate new checkpoint.
+   * Creates reader based on given {@link KinesisReaderCheckpoint}. If {@link
+   * KinesisReaderCheckpoint} is not given, then we use {@code initialCheckpointGenerator} to
+   * generate new checkpoint.
    */
   @Override
-  public UnboundedReader<KinesisRecord> createReader(PipelineOptions options,
-      KinesisReaderCheckpoint checkpointMark) {
+  public UnboundedReader<KinesisRecord> createReader(
+      PipelineOptions options, KinesisReaderCheckpoint checkpointMark) {
 
     CheckpointGenerator checkpointGenerator = initialCheckpointGenerator;
 
@@ -90,9 +110,10 @@ class KinesisSource extends UnboundedSource<KinesisRecord, KinesisReaderCheckpoi
     LOG.info("Creating new reader using {}", checkpointGenerator);
 
     return new KinesisReader(
-        SimplifiedKinesisClient.from(kinesis),
+        SimplifiedKinesisClient.from(awsClientsProvider, limit),
         checkpointGenerator,
-        this);
+        this,
+        upToDateThreshold);
   }
 
   @Override
@@ -102,12 +123,16 @@ class KinesisSource extends UnboundedSource<KinesisRecord, KinesisReaderCheckpoi
 
   @Override
   public void validate() {
-    checkNotNull(kinesis);
+    checkNotNull(awsClientsProvider);
     checkNotNull(initialCheckpointGenerator);
   }
 
   @Override
-  public Coder<KinesisRecord> getDefaultOutputCoder() {
+  public Coder<KinesisRecord> getOutputCoder() {
     return KinesisRecordCoder.of();
+  }
+
+  String getStreamName() {
+    return streamName;
   }
 }

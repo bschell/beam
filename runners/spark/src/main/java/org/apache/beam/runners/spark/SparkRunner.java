@@ -18,6 +18,8 @@
 
 package org.apache.beam.runners.spark;
 
+import static org.apache.beam.runners.core.construction.PipelineResources.detectClassPathResourcesToStage;
+
 import com.google.common.collect.Iterables;
 import java.util.Arrays;
 import java.util.Collection;
@@ -27,6 +29,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import org.apache.beam.runners.core.construction.TransformInputs;
+import org.apache.beam.runners.core.metrics.MetricsPusher;
 import org.apache.beam.runners.spark.aggregators.AggregatorsAccumulator;
 import org.apache.beam.runners.spark.io.CreateStream;
 import org.apache.beam.runners.spark.metrics.AggregatorMetricSource;
@@ -40,7 +43,7 @@ import org.apache.beam.runners.spark.translation.TransformEvaluator;
 import org.apache.beam.runners.spark.translation.TransformTranslator;
 import org.apache.beam.runners.spark.translation.streaming.Checkpoint.CheckpointDir;
 import org.apache.beam.runners.spark.translation.streaming.SparkRunnerStreamingContextFactory;
-import org.apache.beam.runners.spark.util.GlobalWatermarkHolder.WatermarksListener;
+import org.apache.beam.runners.spark.util.GlobalWatermarkHolder.WatermarkAdvancingStreamingListener;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineRunner;
 import org.apache.beam.sdk.io.Read;
@@ -121,6 +124,18 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
   public static SparkRunner fromOptions(PipelineOptions options) {
     SparkPipelineOptions sparkOptions =
         PipelineOptionsValidator.validate(SparkPipelineOptions.class, options);
+
+    if (sparkOptions.getFilesToStage() == null) {
+      sparkOptions.setFilesToStage(
+          detectClassPathResourcesToStage(SparkRunner.class.getClassLoader()));
+      LOG.info(
+          "PipelineOptions.filesToStage was not specified. "
+              + "Defaulting to files from the classpath: will stage {} files. "
+              + "Enable logging at DEBUG level to see which files will be staged.",
+          sparkOptions.getFilesToStage().size());
+      LOG.debug("Classpath elements: {}", sparkOptions.getFilesToStage());
+    }
+
     return new SparkRunner(sparkOptions);
   }
 
@@ -171,7 +186,8 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
       }
 
       // register Watermarks listener to broadcast the advanced WMs.
-      jssc.addStreamingListener(new JavaStreamingListenerWrapper(new WatermarksListener()));
+      jssc.addStreamingListener(
+          new JavaStreamingListenerWrapper(new WatermarkAdvancingStreamingListener()));
 
       // The reason we call initAccumulators here even though it is called in
       // SparkRunnerStreamingContextFactory is because the factory is not called when resuming
@@ -181,14 +197,11 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
 
       startPipeline =
           executorService.submit(
-              new Runnable() {
-
-                @Override
-                public void run() {
-                  LOG.info("Starting streaming pipeline execution.");
-                  jssc.start();
-                }
+              () -> {
+                LOG.info("Starting streaming pipeline execution.");
+                jssc.start();
               });
+      executorService.shutdown();
 
       result = new SparkPipelineResult.StreamingMode(startPipeline, jssc);
     } else {
@@ -201,18 +214,14 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
       updateCacheCandidates(pipeline, translator, evaluationContext);
 
       initAccumulators(mOptions, jsc);
-
       startPipeline =
           executorService.submit(
-              new Runnable() {
-
-                @Override
-                public void run() {
-                  pipeline.traverseTopologically(new Evaluator(translator, evaluationContext));
-                  evaluationContext.computeOutputs();
-                  LOG.info("Batch pipeline execution complete.");
-                }
+              () -> {
+                pipeline.traverseTopologically(new Evaluator(translator, evaluationContext));
+                evaluationContext.computeOutputs();
+                LOG.info("Batch pipeline execution complete.");
               });
+      executorService.shutdown();
 
       result = new SparkPipelineResult.BatchMode(startPipeline, jsc);
     }
@@ -221,6 +230,12 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
       registerMetricsSource(mOptions.getAppName());
     }
 
+    // it would have been better to create MetricsPusher from runner-core but we need
+    // runner-specific
+    // MetricsContainerStepMap
+    MetricsPusher metricsPusher =
+        new MetricsPusher(MetricsAccumulator.getInstance().value(), mOptions, result);
+    metricsPusher.start();
     return result;
   }
 

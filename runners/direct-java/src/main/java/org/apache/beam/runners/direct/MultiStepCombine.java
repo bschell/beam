@@ -23,16 +23,17 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
 import com.google.common.collect.Iterables;
-import java.io.IOException;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-import org.apache.beam.runners.core.construction.CombineTranslation;
+import org.apache.beam.model.pipeline.v1.RunnerApi;
 import org.apache.beam.runners.core.construction.PTransformTranslation;
 import org.apache.beam.runners.core.construction.PTransformTranslation.RawPTransform;
 import org.apache.beam.runners.core.construction.SingleInputOutputOverrideFactory;
+import org.apache.beam.runners.local.StructuralKey;
 import org.apache.beam.sdk.coders.CannotProvideCoderException;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.KvCoder;
@@ -68,12 +69,8 @@ class MultiStepCombine<K, InputT, AccumT, OutputT>
       public boolean matches(AppliedPTransform<?, ?, ?> application) {
         if (PTransformTranslation.COMBINE_TRANSFORM_URN.equals(
             PTransformTranslation.urnForTransformOrNull(application.getTransform()))) {
-          try {
-            GlobalCombineFn fn = CombineTranslation.getCombineFn(application);
-            return isApplicable(application.getInputs(), fn);
-          } catch (IOException e) {
-            throw new RuntimeException(e);
-          }
+          GlobalCombineFn<?, ?, ?> fn = ((Combine.PerKey) application.getTransform()).getFn();
+          return isApplicable(application.getInputs(), fn);
         }
         return false;
       }
@@ -122,8 +119,8 @@ class MultiStepCombine<K, InputT, AccumT, OutputT>
 
   static class Factory<K, InputT, AccumT, OutputT>
       extends SingleInputOutputOverrideFactory<
-            PCollection<KV<K, InputT>>, PCollection<KV<K, OutputT>>,
-            PTransform<PCollection<KV<K, InputT>>, PCollection<KV<K, OutputT>>>> {
+          PCollection<KV<K, InputT>>, PCollection<KV<K, OutputT>>,
+          PTransform<PCollection<KV<K, InputT>>, PCollection<KV<K, OutputT>>>> {
     public static PTransformOverrideFactory create() {
       return new Factory<>();
     }
@@ -137,27 +134,23 @@ class MultiStepCombine<K, InputT, AccumT, OutputT>
                     PCollection<KV<K, InputT>>, PCollection<KV<K, OutputT>>,
                     PTransform<PCollection<KV<K, InputT>>, PCollection<KV<K, OutputT>>>>
                 transform) {
-      try {
-        GlobalCombineFn<?, ?, ?> globalFn = CombineTranslation.getCombineFn(transform);
-        checkState(
-            globalFn instanceof CombineFn,
-            "%s.matcher() should only match %s instances using %s, got %s",
-            MultiStepCombine.class.getSimpleName(),
-            PerKey.class.getSimpleName(),
-            CombineFn.class.getSimpleName(),
-            globalFn.getClass().getName());
-        @SuppressWarnings("unchecked")
-        CombineFn<InputT, AccumT, OutputT> fn = (CombineFn<InputT, AccumT, OutputT>) globalFn;
-        @SuppressWarnings("unchecked")
-        PCollection<KV<K, InputT>> input =
-            (PCollection<KV<K, InputT>>) Iterables.getOnlyElement(transform.getInputs().values());
-        @SuppressWarnings("unchecked")
-        PCollection<KV<K, OutputT>> output =
-            (PCollection<KV<K, OutputT>>) Iterables.getOnlyElement(transform.getOutputs().values());
-        return PTransformReplacement.of(input, new MultiStepCombine<>(fn, output.getCoder()));
-      } catch (IOException e) {
-        throw new RuntimeException(e);
-      }
+      GlobalCombineFn<?, ?, ?> globalFn = ((Combine.PerKey) transform.getTransform()).getFn();
+      checkState(
+          globalFn instanceof CombineFn,
+          "%s.matcher() should only match %s instances using %s, got %s",
+          MultiStepCombine.class.getSimpleName(),
+          PerKey.class.getSimpleName(),
+          CombineFn.class.getSimpleName(),
+          globalFn.getClass().getName());
+      @SuppressWarnings("unchecked")
+      CombineFn<InputT, AccumT, OutputT> fn = (CombineFn<InputT, AccumT, OutputT>) globalFn;
+      @SuppressWarnings("unchecked")
+      PCollection<KV<K, InputT>> input =
+          (PCollection<KV<K, InputT>>) Iterables.getOnlyElement(transform.getInputs().values());
+      @SuppressWarnings("unchecked")
+      PCollection<KV<K, OutputT>> output =
+          (PCollection<KV<K, OutputT>>) Iterables.getOnlyElement(transform.getOutputs().values());
+      return PTransformReplacement.of(input, new MultiStepCombine<>(fn, output.getCoder()));
     }
   }
 
@@ -177,10 +170,16 @@ class MultiStepCombine<K, InputT, AccumT, OutputT>
     this.outputCoder = outputCoder;
   }
 
-  @Nullable
+  @Nonnull
   @Override
   public String getUrn() {
     return "urn:beam:directrunner:transforms:multistepcombine:v1";
+  }
+
+  @Nullable
+  @Override
+  public RunnerApi.FunctionSpec getSpec() {
+    return null;
   }
 
   @Override
@@ -212,9 +211,8 @@ class MultiStepCombine<K, InputT, AccumT, OutputT>
                     input.getWindowingStrategy().getTimestampCombiner(),
                     inputCoder.getKeyCoder())))
         .setCoder(KvCoder.of(inputCoder.getKeyCoder(), accumulatorCoder))
-        .apply(GroupByKey.<K, AccumT>create())
-        .apply(new MergeAndExtractAccumulatorOutput<K, AccumT, OutputT>(combineFn))
-        .setCoder(outputCoder);
+        .apply(GroupByKey.create())
+        .apply(new MergeAndExtractAccumulatorOutput<>(combineFn, outputCoder));
   }
 
   private static class CombineInputs<K, InputT, AccumT> extends DoFn<KV<K, InputT>, KV<K, AccumT>> {
@@ -223,10 +221,11 @@ class MultiStepCombine<K, InputT, AccumT, OutputT>
     private final Coder<K> keyCoder;
 
     /**
-     * Per-bundle state. Accumulators and output timestamps should only be tracked while a bundle
-     * is being processed, and must be cleared when a bundle is completed.
+     * Per-bundle state. Accumulators and output timestamps should only be tracked while a bundle is
+     * being processed, and must be cleared when a bundle is completed.
      */
     private transient Map<WindowedStructuralKey<K>, AccumT> accumulators;
+
     private transient Map<WindowedStructuralKey<K>, Instant> timestamps;
 
     private CombineInputs(
@@ -246,8 +245,8 @@ class MultiStepCombine<K, InputT, AccumT, OutputT>
 
     @ProcessElement
     public void processElement(ProcessContext context, BoundedWindow window) {
-      WindowedStructuralKey<K>
-          key = WindowedStructuralKey.create(keyCoder, context.element().getKey(), window);
+      WindowedStructuralKey<K> key =
+          WindowedStructuralKey.create(keyCoder, context.element().getKey(), window);
       AccumT accumulator = accumulators.get(key);
       Instant assignedTs = timestampCombiner.assign(window, context.timestamp());
       if (accumulator == null) {
@@ -314,15 +313,18 @@ class MultiStepCombine<K, InputT, AccumT, OutputT>
   /**
    * A primitive {@link PTransform} that merges iterables of accumulators and extracts the output.
    *
-   * <p>Required to ensure that Immutability Enforcement is not applied. Accumulators
-   * are explicitly mutable.
+   * <p>Required to ensure that Immutability Enforcement is not applied. Accumulators are explicitly
+   * mutable.
    */
   static class MergeAndExtractAccumulatorOutput<K, AccumT, OutputT>
       extends RawPTransform<PCollection<KV<K, Iterable<AccumT>>>, PCollection<KV<K, OutputT>>> {
     private final CombineFn<?, AccumT, OutputT> combineFn;
+    private final Coder<KV<K, OutputT>> outputCoder;
 
-    private MergeAndExtractAccumulatorOutput(CombineFn<?, AccumT, OutputT> combineFn) {
+    private MergeAndExtractAccumulatorOutput(
+        CombineFn<?, AccumT, OutputT> combineFn, Coder<KV<K, OutputT>> outputCoder) {
       this.combineFn = combineFn;
+      this.outputCoder = outputCoder;
     }
 
     CombineFn<?, AccumT, OutputT> getCombineFn() {
@@ -332,13 +334,19 @@ class MultiStepCombine<K, InputT, AccumT, OutputT>
     @Override
     public PCollection<KV<K, OutputT>> expand(PCollection<KV<K, Iterable<AccumT>>> input) {
       return PCollection.createPrimitiveOutputInternal(
-          input.getPipeline(), input.getWindowingStrategy(), input.isBounded());
+          input.getPipeline(), input.getWindowingStrategy(), input.isBounded(), outputCoder);
+    }
+
+    @Nonnull
+    @Override
+    public String getUrn() {
+      return DIRECT_MERGE_ACCUMULATORS_EXTRACT_OUTPUT_URN;
     }
 
     @Nullable
     @Override
-    public String getUrn() {
-      return DIRECT_MERGE_ACCUMULATORS_EXTRACT_OUTPUT_URN;
+    public RunnerApi.FunctionSpec getSpec() {
+      return null;
     }
   }
 
@@ -403,9 +411,12 @@ class MultiStepCombine<K, InputT, AccumT, OutputT>
       Iterable<AccumT> inputAccumulators = element.getValue().getValue();
       try {
         AccumT first = combineFn.createAccumulator();
-        AccumT merged = combineFn.mergeAccumulators(Iterables.concat(Collections.singleton(first),
-            inputAccumulators,
-            Collections.singleton(combineFn.createAccumulator())));
+        AccumT merged =
+            combineFn.mergeAccumulators(
+                Iterables.concat(
+                    Collections.singleton(first),
+                    inputAccumulators,
+                    Collections.singleton(combineFn.createAccumulator())));
         OutputT extracted = combineFn.extractOutput(merged);
         output.add(element.withValue(KV.of(element.getValue().getKey(), extracted)));
       } catch (Exception e) {

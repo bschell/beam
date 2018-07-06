@@ -23,7 +23,6 @@ import com.google.common.annotations.VisibleForTesting;
 import java.io.IOException;
 import java.util.UUID;
 import org.apache.beam.sdk.transforms.DoFn;
-import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.ShardedKey;
@@ -54,10 +53,5 @@ class TagWithUniqueIds
     context.output(
         KV.of(
             context.element().getKey(), new TableRowInfo(context.element().getValue(), uniqueId)));
-  }
-
-  @Override
-  public void populateDisplayData(DisplayData.Builder builder) {
-    super.populateDisplayData(builder);
   }
 }

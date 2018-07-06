@@ -24,15 +24,20 @@ import static org.junit.Assert.assertThat;
 import com.google.common.base.Equivalence;
 import com.google.common.collect.ImmutableList;
 import java.io.IOException;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.Optional;
 import java.util.Set;
+import org.apache.beam.model.pipeline.v1.RunnerApi;
+import org.apache.beam.model.pipeline.v1.RunnerApi.CombinePayload;
+import org.apache.beam.model.pipeline.v1.RunnerApi.Components;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.Pipeline.PipelineVisitor;
 import org.apache.beam.sdk.coders.BigEndianLongCoder;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.StructuredCoder;
-import org.apache.beam.sdk.common.runner.v1.RunnerApi;
 import org.apache.beam.sdk.io.GenerateSequence;
+import org.apache.beam.sdk.runners.AppliedPTransform;
 import org.apache.beam.sdk.runners.TransformHierarchy.Node;
 import org.apache.beam.sdk.transforms.Count;
 import org.apache.beam.sdk.transforms.Create;
@@ -70,7 +75,7 @@ public class PipelineTranslationTest {
 
     Pipeline sideInputPipeline = Pipeline.create();
     final PCollectionView<String> singletonView =
-        sideInputPipeline.apply(Create.of("foo")).apply(View.<String>asSingleton());
+        sideInputPipeline.apply(Create.of("foo")).apply(View.asSingleton());
     sideInputPipeline
         .apply(Create.of("main input"))
         .apply(
@@ -87,7 +92,7 @@ public class PipelineTranslationTest {
     Pipeline complexPipeline = Pipeline.create();
     BigEndianLongCoder customCoder = BigEndianLongCoder.of();
     PCollection<Long> elems = complexPipeline.apply(GenerateSequence.from(0L).to(207L));
-    PCollection<Long> counted = elems.apply(Count.<Long>globally()).setCoder(customCoder);
+    PCollection<Long> counted = elems.apply(Count.globally()).setCoder(customCoder);
     PCollection<Long> windowed =
         counted.apply(
             Window.<Long>into(FixedWindows.of(Duration.standardMinutes(7)))
@@ -97,9 +102,8 @@ public class PipelineTranslationTest {
                 .accumulatingFiredPanes()
                 .withAllowedLateness(Duration.standardMinutes(3L)));
     final WindowingStrategy<?, ?> windowedStrategy = windowed.getWindowingStrategy();
-    PCollection<KV<String, Long>> keyed = windowed.apply(WithKeys.<String, Long>of("foo"));
-    PCollection<KV<String, Iterable<Long>>> grouped =
-        keyed.apply(GroupByKey.<String, Long>create());
+    PCollection<KV<String, Long>> keyed = windowed.apply(WithKeys.of("foo"));
+    PCollection<KV<String, Iterable<Long>>> grouped = keyed.apply(GroupByKey.create());
 
     return ImmutableList.of(trivialPipeline, sideInputPipeline, complexPipeline);
   }
@@ -107,17 +111,7 @@ public class PipelineTranslationTest {
   @Test
   public void testProtoDirectly() {
     final RunnerApi.Pipeline pipelineProto = PipelineTranslation.toProto(pipeline);
-    pipeline.traverseTopologically(
-        new PipelineProtoVerificationVisitor(pipelineProto));
-  }
-
-  @Test
-  public void testProtoAgainstRehydrated() throws Exception {
-    RunnerApi.Pipeline pipelineProto = PipelineTranslation.toProto(pipeline);
-    Pipeline rehydrated = PipelineTranslation.fromProto(pipelineProto);
-
-    rehydrated.traverseTopologically(
-        new PipelineProtoVerificationVisitor(pipelineProto));
+    pipeline.traverseTopologically(new PipelineProtoVerificationVisitor(pipelineProto));
   }
 
   private static class PipelineProtoVerificationVisitor extends PipelineVisitor.Defaults {
@@ -162,8 +156,7 @@ public class PipelineTranslationTest {
           // Combine translation introduces a coder that is not assigned to any PCollection
           // in the default expansion, and must be explicitly added here.
           try {
-            addCoders(
-                CombineTranslation.getAccumulatorCoder(node.toAppliedPTransform(getPipeline())));
+            addCoders(getAccumulatorCoder(node.toAppliedPTransform(getPipeline())));
           } catch (IOException e) {
             throw new RuntimeException(e);
           }
@@ -188,12 +181,38 @@ public class PipelineTranslationTest {
     }
 
     private void addCoders(Coder<?> coder) {
-      coders.add(Equivalence.<Coder<?>>identity().wrap(coder));
+      coders.add(Equivalence.identity().wrap(coder));
       if (CoderTranslation.KNOWN_CODER_URNS.containsKey(coder.getClass())) {
         for (Coder<?> component : ((StructuredCoder<?>) coder).getComponents()) {
           addCoders(component);
         }
       }
+    }
+  }
+
+  private static Coder<?> getAccumulatorCoder(AppliedPTransform<?, ?, ?> transform)
+      throws IOException {
+    SdkComponents sdkComponents = SdkComponents.create(transform.getPipeline().getOptions());
+    String id =
+        getCombinePayload(transform, sdkComponents)
+            .map(CombinePayload::getAccumulatorCoderId)
+            .orElseThrow(() -> new IOException("Transform does not contain an AccumulatorCoder"));
+    Components components = sdkComponents.toComponents();
+    return CoderTranslation.fromProto(
+        components.getCodersOrThrow(id), RehydratedComponents.forComponents(components));
+  }
+
+  private static Optional<CombinePayload> getCombinePayload(
+      AppliedPTransform<?, ?, ?> transform, SdkComponents components) throws IOException {
+    RunnerApi.PTransform proto =
+        PTransformTranslation.toProto(transform, Collections.emptyList(), components);
+
+    // Even if the proto has no spec, calling getSpec still returns a blank spec, which we want to
+    // avoid. It should be clear to the caller whether or not there was a spec in the transform.
+    if (proto.hasSpec()) {
+      return Optional.of(CombinePayload.parseFrom(proto.getSpec().getPayload()));
+    } else {
+      return Optional.empty();
     }
   }
 }

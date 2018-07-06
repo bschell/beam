@@ -76,7 +76,7 @@ public final class TestStream<T> extends PTransform<PBegin, PCollection<T>> {
     private final Instant currentWatermark;
 
     private Builder(Coder<T> coder) {
-      this(coder, ImmutableList.<Event<T>>of(), BoundedWindow.TIMESTAMP_MIN_VALUE);
+      this(coder, ImmutableList.of(), BoundedWindow.TIMESTAMP_MIN_VALUE);
     }
 
     private Builder(Coder<T> coder, ImmutableList<Event<T>> events, Instant currentWatermark) {
@@ -128,7 +128,7 @@ public final class TestStream<T> extends PTransform<PBegin, PCollection<T>> {
               .addAll(events)
               .add(ElementEvent.add(element, elements))
               .build();
-      return new Builder<T>(coder, newEvents, currentWatermark);
+      return new Builder<>(coder, newEvents, currentWatermark);
     }
 
     /**
@@ -142,7 +142,7 @@ public final class TestStream<T> extends PTransform<PBegin, PCollection<T>> {
      */
     public Builder<T> advanceWatermarkTo(Instant newWatermark) {
       checkArgument(
-          newWatermark.isAfter(currentWatermark), "The watermark must monotonically advance");
+          !newWatermark.isBefore(currentWatermark), "The watermark must monotonically advance");
       checkArgument(
           newWatermark.isBefore(BoundedWindow.TIMESTAMP_MAX_VALUE),
           "The Watermark cannot progress beyond the maximum. Got: %s. Maximum: %s",
@@ -151,9 +151,9 @@ public final class TestStream<T> extends PTransform<PBegin, PCollection<T>> {
       ImmutableList<Event<T>> newEvents =
           ImmutableList.<Event<T>>builder()
               .addAll(events)
-              .add(WatermarkEvent.<T>advanceTo(newWatermark))
+              .add(WatermarkEvent.advanceTo(newWatermark))
               .build();
-      return new Builder<T>(coder, newEvents, newWatermark);
+      return new Builder<>(coder, newEvents, newWatermark);
     }
 
     /**
@@ -170,9 +170,9 @@ public final class TestStream<T> extends PTransform<PBegin, PCollection<T>> {
       ImmutableList<Event<T>> newEvents =
           ImmutableList.<Event<T>>builder()
               .addAll(events)
-              .add(ProcessingTimeEvent.<T>advanceBy(amount))
+              .add(ProcessingTimeEvent.advanceBy(amount))
               .build();
-      return new Builder<T>(coder, newEvents, currentWatermark);
+      return new Builder<>(coder, newEvents, currentWatermark);
     }
 
     /**
@@ -183,7 +183,7 @@ public final class TestStream<T> extends PTransform<PBegin, PCollection<T>> {
       ImmutableList<Event<T>> newEvents =
           ImmutableList.<Event<T>>builder()
               .addAll(events)
-              .add(WatermarkEvent.<T>advanceTo(BoundedWindow.TIMESTAMP_MAX_VALUE))
+              .add(WatermarkEvent.advanceTo(BoundedWindow.TIMESTAMP_MAX_VALUE))
               .build();
       return new TestStream<>(coder, newEvents);
     }
@@ -214,9 +214,7 @@ public final class TestStream<T> extends PTransform<PBegin, PCollection<T>> {
       return add(ImmutableList.<TimestampedValue<T>>builder().add(element).add(elements).build());
     }
 
-    /**
-     * <b>For internal use only: no backwards compatibility guarantees.</b>
-     */
+    /** <b>For internal use only: no backwards compatibility guarantees.</b> */
     @Internal
     public static <T> Event<T> add(Iterable<TimestampedValue<T>> elements) {
       return new AutoValue_TestStream_ElementEvent<>(EventType.ELEMENT, elements);
@@ -228,9 +226,7 @@ public final class TestStream<T> extends PTransform<PBegin, PCollection<T>> {
   public abstract static class WatermarkEvent<T> implements Event<T> {
     public abstract Instant getWatermark();
 
-    /**
-     * <b>For internal use only: no backwards compatibility guarantees.</b>
-     */
+    /** <b>For internal use only: no backwards compatibility guarantees.</b> */
     @Internal
     public static <T> Event<T> advanceTo(Instant newWatermark) {
       return new AutoValue_TestStream_WatermarkEvent<>(EventType.WATERMARK, newWatermark);
@@ -242,9 +238,7 @@ public final class TestStream<T> extends PTransform<PBegin, PCollection<T>> {
   public abstract static class ProcessingTimeEvent<T> implements Event<T> {
     public abstract Duration getProcessingTimeAdvance();
 
-    /**
-     * <b>For internal use only: no backwards compatibility guarantees.</b>
-     */
+    /** <b>For internal use only: no backwards compatibility guarantees.</b> */
     @Internal
     public static <T> Event<T> advanceBy(Duration amount) {
       return new AutoValue_TestStream_ProcessingTimeEvent<>(EventType.PROCESSING_TIME, amount);
@@ -253,9 +247,8 @@ public final class TestStream<T> extends PTransform<PBegin, PCollection<T>> {
 
   @Override
   public PCollection<T> expand(PBegin input) {
-    return PCollection.<T>createPrimitiveOutputInternal(
-            input.getPipeline(), WindowingStrategy.globalDefault(), IsBounded.UNBOUNDED)
-        .setCoder(coder);
+    return PCollection.createPrimitiveOutputInternal(
+        input.getPipeline(), WindowingStrategy.globalDefault(), IsBounded.UNBOUNDED, coder);
   }
 
   public Coder<T> getValueCoder() {
@@ -274,9 +267,9 @@ public final class TestStream<T> extends PTransform<PBegin, PCollection<T>> {
   /**
    * <b>For internal use only. No backwards-compatibility guarantees.</b>
    *
-   * <p>Builder a test stream directly from events. No validation is performed on
-   * watermark monotonicity, etc. This is assumed to be a previously-serialized
-   * {@link TestStream} transform that is correct by construction.
+   * <p>Builder a test stream directly from events. No validation is performed on watermark
+   * monotonicity, etc. This is assumed to be a previously-serialized {@link TestStream} transform
+   * that is correct by construction.
    */
   @Internal
   public static <T> TestStream<T> fromRawEvents(Coder<T> coder, List<Event<T>> events) {

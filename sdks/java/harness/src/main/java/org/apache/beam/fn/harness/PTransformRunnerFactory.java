@@ -22,54 +22,63 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import org.apache.beam.fn.harness.control.BundleSplitListener;
 import org.apache.beam.fn.harness.data.BeamFnDataClient;
-import org.apache.beam.fn.harness.fn.ThrowingConsumer;
-import org.apache.beam.fn.harness.fn.ThrowingRunnable;
-import org.apache.beam.sdk.common.runner.v1.RunnerApi;
+import org.apache.beam.fn.harness.state.BeamFnStateClient;
+import org.apache.beam.model.pipeline.v1.RunnerApi;
+import org.apache.beam.model.pipeline.v1.RunnerApi.Coder;
+import org.apache.beam.model.pipeline.v1.RunnerApi.PCollection;
+import org.apache.beam.model.pipeline.v1.RunnerApi.PTransform;
+import org.apache.beam.sdk.fn.data.FnDataReceiver;
+import org.apache.beam.sdk.fn.function.ThrowingRunnable;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.util.WindowedValue;
 
-/**
- * A factory able to instantiate an appropriate handler for a given PTransform.
- */
+/** A factory able to instantiate an appropriate handler for a given PTransform. */
 public interface PTransformRunnerFactory<T> {
-
   /**
    * Creates and returns a handler for a given PTransform. Note that the handler must support
-   * processing multiple bundles. The handler will be discarded if an error is thrown during
-   * element processing, or during execution of start/finish.
+   * processing multiple bundles. The handler will be discarded if an error is thrown during element
+   * processing, or during execution of start/finish.
    *
    * @param pipelineOptions Pipeline options
-   * @param beamFnDataClient
+   * @param beamFnDataClient A client for handling inbound and outbound data streams.
+   * @param beamFnStateClient A client for handling state requests.
    * @param pTransformId The id of the PTransform.
    * @param pTransform The PTransform definition.
    * @param processBundleInstructionId A supplier containing the active process bundle instruction
-   * id.
+   *     id.
    * @param pCollections A mapping from PCollection id to PCollection definition.
    * @param coders A mapping from coder id to coder definition.
+   * @param windowingStrategies
    * @param pCollectionIdsToConsumers A mapping from PCollection id to a collection of consumers.
-   * Note that if this handler is a consumer, it should register itself within this multimap under
-   * the appropriate PCollection ids. Also note that all output consumers needed by this PTransform
-   * (based on the values of the {@link RunnerApi.PTransform#getOutputsMap()} will have already
-   * registered within this multimap.
+   *     Note that if this handler is a consumer, it should register itself within this multimap
+   *     under the appropriate PCollection ids. Also note that all output consumers needed by this
+   *     PTransform (based on the values of the {@link PTransform#getOutputsMap()} will have already
+   *     registered within this multimap.
    * @param addStartFunction A consumer to register a start bundle handler with.
    * @param addFinishFunction A consumer to register a finish bundle handler with.
+   * @param splitListener A listener to be invoked when the PTransform splits itself.
    */
   T createRunnerForPTransform(
       PipelineOptions pipelineOptions,
       BeamFnDataClient beamFnDataClient,
+      BeamFnStateClient beamFnStateClient,
       String pTransformId,
       RunnerApi.PTransform pTransform,
       Supplier<String> processBundleInstructionId,
-      Map<String, RunnerApi.PCollection> pCollections,
-      Map<String, RunnerApi.Coder> coders,
-      Multimap<String, ThrowingConsumer<WindowedValue<?>>> pCollectionIdsToConsumers,
+      Map<String, PCollection> pCollections,
+      Map<String, Coder> coders,
+      Map<String, RunnerApi.WindowingStrategy> windowingStrategies,
+      Multimap<String, FnDataReceiver<WindowedValue<?>>> pCollectionIdsToConsumers,
       Consumer<ThrowingRunnable> addStartFunction,
-      Consumer<ThrowingRunnable> addFinishFunction) throws IOException;
+      Consumer<ThrowingRunnable> addFinishFunction,
+      BundleSplitListener splitListener)
+      throws IOException;
 
   /**
-   * A registrar which can return a mapping from {@link RunnerApi.FunctionSpec#getUrn()} to
-   * a factory capable of instantiating an appropriate handler.
+   * A registrar which can return a mapping from {@link RunnerApi.FunctionSpec#getUrn()} to a
+   * factory capable of instantiating an appropriate handler.
    */
   interface Registrar {
     /**

@@ -32,6 +32,7 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -40,7 +41,6 @@ import org.apache.beam.runners.apex.ApexRunner;
 import org.apache.beam.runners.apex.translation.utils.ApexStateInternals.ApexStateBackend;
 import org.apache.beam.runners.apex.translation.utils.ApexStreamTuple;
 import org.apache.beam.runners.apex.translation.utils.NoOpStepContext;
-import org.apache.beam.runners.apex.translation.utils.SerializablePipelineOptions;
 import org.apache.beam.runners.apex.translation.utils.StateInternalsProxy;
 import org.apache.beam.runners.apex.translation.utils.ValueAndCoderKryoSerializable;
 import org.apache.beam.runners.core.DoFnRunner;
@@ -64,6 +64,7 @@ import org.apache.beam.runners.core.StatefulDoFnRunner;
 import org.apache.beam.runners.core.TimerInternals;
 import org.apache.beam.runners.core.TimerInternals.TimerData;
 import org.apache.beam.runners.core.TimerInternalsFactory;
+import org.apache.beam.runners.core.construction.SerializablePipelineOptions;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.ListCoder;
@@ -73,11 +74,14 @@ import org.apache.beam.sdk.state.TimeDomain;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.reflect.DoFnInvoker;
 import org.apache.beam.sdk.transforms.reflect.DoFnInvokers;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignatures;
 import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.PaneInfo;
 import org.apache.beam.sdk.util.UserCodeException;
 import org.apache.beam.sdk.util.WindowedValue;
+import org.apache.beam.sdk.util.WindowedValue.FullWindowedValueCoder;
 import org.apache.beam.sdk.util.WindowedValue.WindowedValueCoder;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollectionView;
@@ -88,26 +92,30 @@ import org.joda.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Apex operator for Beam {@link DoFn}.
- */
-public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements OutputManager,
-    ApexTimerInternals.TimerProcessor<Object> {
+/** Apex operator for Beam {@link DoFn}. */
+public class ApexParDoOperator<InputT, OutputT> extends BaseOperator
+    implements OutputManager, ApexTimerInternals.TimerProcessor<Object> {
   private static final Logger LOG = LoggerFactory.getLogger(ApexParDoOperator.class);
   private boolean traceTuples = true;
 
   @Bind(JavaSerializer.class)
   private final SerializablePipelineOptions pipelineOptions;
+
   @Bind(JavaSerializer.class)
   private final DoFn<InputT, OutputT> doFn;
+
   @Bind(JavaSerializer.class)
   private final TupleTag<OutputT> mainOutputTag;
+
   @Bind(JavaSerializer.class)
   private final List<TupleTag<?>> additionalOutputTags;
+
   @Bind(JavaSerializer.class)
   private final WindowingStrategy<?, ?> windowingStrategy;
+
   @Bind(JavaSerializer.class)
   private final List<PCollectionView<?>> sideInputs;
+
   @Bind(JavaSerializer.class)
   private final Coder<WindowedValue<InputT>> inputCoder;
 
@@ -133,28 +141,30 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
       List<TupleTag<?>> additionalOutputTags,
       WindowingStrategy<?, ?> windowingStrategy,
       List<PCollectionView<?>> sideInputs,
-      Coder<WindowedValue<InputT>> inputCoder,
-      ApexStateBackend stateBackend
-      ) {
+      Coder<InputT> inputCoder,
+      ApexStateBackend stateBackend) {
     this.pipelineOptions = new SerializablePipelineOptions(pipelineOptions);
     this.doFn = doFn;
     this.mainOutputTag = mainOutputTag;
     this.additionalOutputTags = additionalOutputTags;
     this.windowingStrategy = windowingStrategy;
     this.sideInputs = sideInputs;
-    this.sideInputStateInternals = new StateInternalsProxy<>(
-        stateBackend.newStateInternalsFactory(VoidCoder.of()));
+    this.sideInputStateInternals =
+        new StateInternalsProxy<>(stateBackend.newStateInternalsFactory(VoidCoder.of()));
 
     if (additionalOutputTags.size() > additionalOutputPorts.length) {
-      String msg = String.format("Too many additional outputs (currently only supporting %s).",
-          additionalOutputPorts.length);
+      String msg =
+          String.format(
+              "Too many additional outputs (currently only supporting %s).",
+              additionalOutputPorts.length);
       throw new UnsupportedOperationException(msg);
     }
 
-    Coder<List<WindowedValue<InputT>>> listCoder = ListCoder.of(inputCoder);
-    this.pushedBack = new ValueAndCoderKryoSerializable<>(new ArrayList<WindowedValue<InputT>>(),
-        listCoder);
-    this.inputCoder = inputCoder;
+    WindowedValueCoder<InputT> wvCoder =
+        FullWindowedValueCoder.of(inputCoder, this.windowingStrategy.getWindowFn().windowCoder());
+    Coder<List<WindowedValue<InputT>>> listCoder = ListCoder.of(wvCoder);
+    this.pushedBack = new ValueAndCoderKryoSerializable<>(new ArrayList<>(), listCoder);
+    this.inputCoder = wvCoder;
 
     TimerInternals.TimerDataCoder timerCoder =
         TimerInternals.TimerDataCoder.of(windowingStrategy.getWindowFn().windowCoder());
@@ -163,10 +173,18 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
     if (doFn instanceof ProcessFn) {
       // we know that it is keyed on String
       Coder<?> keyCoder = StringUtf8Coder.of();
-      this.currentKeyStateInternals = new StateInternalsProxy<>(
-          stateBackend.newStateInternalsFactory(keyCoder));
+      this.currentKeyStateInternals =
+          new StateInternalsProxy<>(stateBackend.newStateInternalsFactory(keyCoder));
+    } else {
+      DoFnSignature signature = DoFnSignatures.getSignature(doFn.getClass());
+      if (signature.usesState()) {
+        checkArgument(inputCoder instanceof KvCoder, "keyed input required for stateful DoFn");
+        @SuppressWarnings("rawtypes")
+        Coder<?> keyCoder = ((KvCoder) inputCoder).getKeyCoder();
+        this.currentKeyStateInternals =
+            new StateInternalsProxy<>(stateBackend.newStateInternalsFactory(keyCoder));
+      }
     }
-
   }
 
   @SuppressWarnings("unused") // for Kryo
@@ -185,62 +203,63 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
 
   public final transient DefaultInputPort<ApexStreamTuple<WindowedValue<InputT>>> input =
       new DefaultInputPort<ApexStreamTuple<WindowedValue<InputT>>>() {
-    @Override
-    public void process(ApexStreamTuple<WindowedValue<InputT>> t) {
-      if (t instanceof ApexStreamTuple.WatermarkTuple) {
-        processWatermark((ApexStreamTuple.WatermarkTuple<?>) t);
-      } else {
-        if (traceTuples) {
-          LOG.debug("\ninput {}\n", t.getValue());
+        @Override
+        public void process(ApexStreamTuple<WindowedValue<InputT>> t) {
+          if (t instanceof ApexStreamTuple.WatermarkTuple) {
+            processWatermark((ApexStreamTuple.WatermarkTuple<?>) t);
+          } else {
+            if (traceTuples) {
+              LOG.debug("\ninput {}\n", t.getValue());
+            }
+            Iterable<WindowedValue<InputT>> justPushedBack =
+                processElementInReadyWindows(t.getValue());
+            for (WindowedValue<InputT> pushedBackValue : justPushedBack) {
+              pushedBackWatermark.add(pushedBackValue.getTimestamp().getMillis());
+              pushedBack.get().add(pushedBackValue);
+            }
+          }
         }
-        Iterable<WindowedValue<InputT>> justPushedBack = processElementInReadyWindows(t.getValue());
-        for (WindowedValue<InputT> pushedBackValue : justPushedBack) {
-          pushedBackWatermark.add(pushedBackValue.getTimestamp().getMillis());
-          pushedBack.get().add(pushedBackValue);
-        }
-      }
-    }
-  };
+      };
 
   @InputPortFieldAnnotation(optional = true)
   public final transient DefaultInputPort<ApexStreamTuple<WindowedValue<Iterable<?>>>> sideInput1 =
       new DefaultInputPort<ApexStreamTuple<WindowedValue<Iterable<?>>>>() {
-    @Override
-    public void process(ApexStreamTuple<WindowedValue<Iterable<?>>> t) {
-      if (t instanceof ApexStreamTuple.WatermarkTuple) {
-        // ignore side input watermarks
-        return;
-      }
+        @Override
+        public void process(ApexStreamTuple<WindowedValue<Iterable<?>>> t) {
+          if (t instanceof ApexStreamTuple.WatermarkTuple) {
+            // ignore side input watermarks
+            return;
+          }
 
-      int sideInputIndex = 0;
-      if (t instanceof ApexStreamTuple.DataTuple) {
-        sideInputIndex = ((ApexStreamTuple.DataTuple<?>) t).getUnionTag();
-      }
+          int sideInputIndex = 0;
+          if (t instanceof ApexStreamTuple.DataTuple) {
+            sideInputIndex = ((ApexStreamTuple.DataTuple<?>) t).getUnionTag();
+          }
 
-      if (traceTuples) {
-        LOG.debug("\nsideInput {} {}\n", sideInputIndex, t.getValue());
-      }
+          if (traceTuples) {
+            LOG.debug("\nsideInput {} {}\n", sideInputIndex, t.getValue());
+          }
 
-      PCollectionView<?> sideInput = sideInputs.get(sideInputIndex);
-      sideInputHandler.addSideInputValue(sideInput, t.getValue());
+          PCollectionView<?> sideInput = sideInputs.get(sideInputIndex);
+          sideInputHandler.addSideInputValue(sideInput, t.getValue());
 
-      List<WindowedValue<InputT>> newPushedBack = new ArrayList<>();
-      for (WindowedValue<InputT> elem : pushedBack.get()) {
-        Iterable<WindowedValue<InputT>> justPushedBack = processElementInReadyWindows(elem);
-        Iterables.addAll(newPushedBack, justPushedBack);
-      }
+          List<WindowedValue<InputT>> newPushedBack = new ArrayList<>();
+          for (WindowedValue<InputT> elem : pushedBack.get()) {
+            Iterable<WindowedValue<InputT>> justPushedBack = processElementInReadyWindows(elem);
+            Iterables.addAll(newPushedBack, justPushedBack);
+          }
 
-      pushedBack.get().clear();
-      pushedBackWatermark.clear();
-      for (WindowedValue<InputT> pushedBackValue : newPushedBack) {
-        pushedBackWatermark.add(pushedBackValue.getTimestamp().getMillis());
-        pushedBack.get().add(pushedBackValue);
-      }
+          pushedBack.get().clear();
+          pushedBackWatermark.clear();
+          for (WindowedValue<InputT> pushedBackValue : newPushedBack) {
+            pushedBackWatermark.add(pushedBackValue.getTimestamp().getMillis());
+            pushedBack.get().add(pushedBackValue);
+          }
 
-      // potentially emit watermark
-      processWatermark(ApexStreamTuple.WatermarkTuple.of(currentInputWatermark));
-    }
-  };
+          // potentially emit watermark
+          processWatermark(ApexStreamTuple.WatermarkTuple.of(currentInputWatermark));
+        }
+      };
 
   @OutputPortFieldAnnotation(optional = true)
   public final transient DefaultOutputPort<ApexStreamTuple<?>> output = new DefaultOutputPort<>();
@@ -248,15 +267,19 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
   @OutputPortFieldAnnotation(optional = true)
   public final transient DefaultOutputPort<ApexStreamTuple<?>> additionalOutput1 =
       new DefaultOutputPort<>();
+
   @OutputPortFieldAnnotation(optional = true)
   public final transient DefaultOutputPort<ApexStreamTuple<?>> additionalOutput2 =
       new DefaultOutputPort<>();
+
   @OutputPortFieldAnnotation(optional = true)
   public final transient DefaultOutputPort<ApexStreamTuple<?>> additionalOutput3 =
       new DefaultOutputPort<>();
+
   @OutputPortFieldAnnotation(optional = true)
   public final transient DefaultOutputPort<ApexStreamTuple<?>> additionalOutput4 =
       new DefaultOutputPort<>();
+
   @OutputPortFieldAnnotation(optional = true)
   public final transient DefaultOutputPort<ApexStreamTuple<?>> additionalOutput5 =
       new DefaultOutputPort<>();
@@ -286,27 +309,28 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
         InputT value = elem.getValue();
         final Object key;
         final Coder<Object> keyCoder;
-        @SuppressWarnings({ "rawtypes", "unchecked" })
+        @SuppressWarnings({"rawtypes", "unchecked"})
         WindowedValueCoder<InputT> wvCoder = (WindowedValueCoder) inputCoder;
         if (value instanceof KeyedWorkItem) {
           key = ((KeyedWorkItem) value).key();
-          @SuppressWarnings({ "rawtypes", "unchecked" })
+          @SuppressWarnings({"rawtypes", "unchecked"})
           KeyedWorkItemCoder<Object, ?> kwiCoder = (KeyedWorkItemCoder) wvCoder.getValueCoder();
           keyCoder = kwiCoder.getKeyCoder();
         } else {
           key = ((KV) value).getKey();
-          @SuppressWarnings({ "rawtypes", "unchecked" })
+          @SuppressWarnings({"rawtypes", "unchecked"})
           KvCoder<Object, ?> kwiCoder = (KvCoder) wvCoder.getValueCoder();
           keyCoder = kwiCoder.getKeyCoder();
         }
         ((StateInternalsProxy) currentKeyStateInternals).setKey(key);
-        currentKeyTimerInternals.setContext(key, keyCoder,
+        currentKeyTimerInternals.setContext(
+            key,
+            keyCoder,
             new Instant(this.currentInputWatermark),
-            new Instant(this.currentOutputWatermark)
-            );
+            new Instant(this.currentOutputWatermark));
       }
-      Iterable<WindowedValue<InputT>> pushedBack = pushbackDoFnRunner
-          .processElementInReadyWindows(elem);
+      Iterable<WindowedValue<InputT>> pushedBack =
+          pushbackDoFnRunner.processElementInReadyWindows(elem);
       pushbackDoFnRunner.finishBundle();
       return pushedBack;
     } catch (UserCodeException ue) {
@@ -323,25 +347,29 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
     @SuppressWarnings("unchecked")
     Coder<Object> keyCoder = (Coder) currentKeyStateInternals.getKeyCoder();
     ((StateInternalsProxy) currentKeyStateInternals).setKey(key);
-    currentKeyTimerInternals.setContext(key, keyCoder, new Instant(this.currentInputWatermark),
+    currentKeyTimerInternals.setContext(
+        key,
+        keyCoder,
+        new Instant(this.currentInputWatermark),
         new Instant(this.currentOutputWatermark));
     for (TimerData timerData : timerDataSet) {
       StateNamespace namespace = timerData.getNamespace();
       checkArgument(namespace instanceof WindowNamespace);
       BoundedWindow window = ((WindowNamespace<?>) namespace).getWindow();
-      pushbackDoFnRunner.onTimer(timerData.getTimerId(), window,
-          timerData.getTimestamp(), timerData.getDomain());
+      pushbackDoFnRunner.onTimer(
+          timerData.getTimerId(), window, timerData.getTimestamp(), timerData.getDomain());
     }
     pushbackDoFnRunner.finishBundle();
   }
 
   private void processWatermark(ApexStreamTuple.WatermarkTuple<?> mark) {
     this.currentInputWatermark = mark.getTimestamp();
-    long minEventTimeTimer = currentKeyTimerInternals.fireReadyTimers(
-        this.currentInputWatermark,
-        this, TimeDomain.EVENT_TIME);
+    long minEventTimeTimer =
+        currentKeyTimerInternals.fireReadyTimers(
+            this.currentInputWatermark, this, TimeDomain.EVENT_TIME);
 
-    checkState(minEventTimeTimer >= currentInputWatermark,
+    checkState(
+        minEventTimeTimer >= currentInputWatermark,
         "Event time timer processing generates new timer(s) behind watermark.");
     //LOG.info("Processing time timer {} registered behind watermark {}", minProcessingTimeTimer,
     //    currentInputWatermark);
@@ -350,11 +378,13 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
     // drain all timers below current watermark, including those that result from firing
     long minProcessingTimeTimer = Long.MIN_VALUE;
     while (minProcessingTimeTimer < currentInputWatermark) {
-      minProcessingTimeTimer = currentKeyTimerInternals.fireReadyTimers(
-        this.currentInputWatermark,
-        this, TimeDomain.PROCESSING_TIME);
+      minProcessingTimeTimer =
+          currentKeyTimerInternals.fireReadyTimers(
+              this.currentInputWatermark, this, TimeDomain.PROCESSING_TIME);
       if (minProcessingTimeTimer < currentInputWatermark) {
-        LOG.info("Processing time timer {} registered behind watermark {}", minProcessingTimeTimer,
+        LOG.info(
+            "Processing time timer {} registered behind watermark {}",
+            minProcessingTimeTimer,
             currentInputWatermark);
       }
     }
@@ -363,8 +393,7 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
       return;
     }
 
-    long potentialOutputWatermark =
-        Math.min(pushedBackWatermark.get(), currentInputWatermark);
+    long potentialOutputWatermark = Math.min(pushedBackWatermark.get(), currentInputWatermark);
     if (potentialOutputWatermark > currentOutputWatermark) {
       currentOutputWatermark = potentialOutputWatermark;
       outputWatermark(ApexStreamTuple.WatermarkTuple.of(currentOutputWatermark));
@@ -386,7 +415,9 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
 
   @Override
   public void setup(OperatorContext context) {
-    this.traceTuples = ApexStreamTuple.Logging.isDebugEnabled(pipelineOptions.get(), this);
+    this.traceTuples =
+        ApexStreamTuple.Logging.isDebugEnabled(
+            pipelineOptions.get().as(ApexPipelineOptions.class), this);
     SideInputReader sideInputReader = NullSideInputReader.of(sideInputs);
     if (!sideInputs.isEmpty()) {
       sideInputHandler = new SideInputHandler(sideInputs, sideInputStateInternals);
@@ -395,34 +426,36 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
 
     for (int i = 0; i < additionalOutputTags.size(); i++) {
       @SuppressWarnings("unchecked")
-      DefaultOutputPort<ApexStreamTuple<?>> port = (DefaultOutputPort<ApexStreamTuple<?>>)
-          additionalOutputPorts[i];
+      DefaultOutputPort<ApexStreamTuple<?>> port =
+          (DefaultOutputPort<ApexStreamTuple<?>>) additionalOutputPorts[i];
       additionalOutputPortMapping.put(additionalOutputTags.get(i), port);
     }
 
-    NoOpStepContext stepContext = new NoOpStepContext() {
+    NoOpStepContext stepContext =
+        new NoOpStepContext() {
 
-      @Override
-      public StateInternals stateInternals() {
-        return currentKeyStateInternals;
-      }
+          @Override
+          public StateInternals stateInternals() {
+            return currentKeyStateInternals;
+          }
 
-      @Override
-      public TimerInternals timerInternals() {
-        return currentKeyTimerInternals;
-      }
-
-    };
-    DoFnRunner<InputT, OutputT> doFnRunner = DoFnRunners.simpleRunner(
-        pipelineOptions.get(),
-        doFn,
-        sideInputReader,
-        this,
-        mainOutputTag,
-        additionalOutputTags,
-        stepContext,
-        windowingStrategy
-        );
+          @Override
+          public TimerInternals timerInternals() {
+            return currentKeyTimerInternals;
+          }
+        };
+    DoFnRunner<InputT, OutputT> doFnRunner =
+        DoFnRunners.simpleRunner(
+            pipelineOptions.get(),
+            doFn,
+            sideInputReader,
+            this,
+            mainOutputTag,
+            additionalOutputTags,
+            stepContext,
+            null,
+            Collections.emptyMap(),
+            windowingStrategy);
 
     doFnInvoker = DoFnInvokers.invokerFor(doFn);
     doFnInvoker.invokeSetup();
@@ -441,12 +474,9 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
           new StatefulDoFnRunner.StateInternalsStateCleaner<>(
               doFn, stepContext.stateInternals(), windowCoder);
 
-      doFnRunner = DoFnRunners.defaultStatefulDoFnRunner(
-          doFn,
-          doFnRunner,
-          windowingStrategy,
-          cleanupTimer,
-          stateCleaner);
+      doFnRunner =
+          DoFnRunners.defaultStatefulDoFnRunner(
+              doFn, doFnRunner, windowingStrategy, cleanupTimer, stateCleaner);
     }
 
     pushbackDoFnRunner =
@@ -458,16 +488,11 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
       StateInternalsFactory<String> stateInternalsFactory =
           (StateInternalsFactory<String>) this.currentKeyStateInternals.getFactory();
 
-      @SuppressWarnings({ "rawtypes", "unchecked" })
-      ProcessFn<InputT, OutputT, Object, RestrictionTracker<Object>>
-        splittableDoFn = (ProcessFn) doFn;
+      @SuppressWarnings({"rawtypes", "unchecked"})
+      ProcessFn<InputT, OutputT, Object, RestrictionTracker<Object, Object>> splittableDoFn =
+          (ProcessFn) doFn;
       splittableDoFn.setStateInternalsFactory(stateInternalsFactory);
-      TimerInternalsFactory<String> timerInternalsFactory = new TimerInternalsFactory<String>() {
-         @Override
-         public TimerInternals timerInternalsForKey(String key) {
-           return currentKeyTimerInternals;
-          }
-        };
+      TimerInternalsFactory<String> timerInternalsFactory = key -> currentKeyTimerInternals;
       splittableDoFn.setTimerInternalsFactory(timerInternalsFactory);
       splittableDoFn.setProcessElementInvoker(
           new OutputAndTimeBoundedSplittableProcessElementInvoker<>(
@@ -480,15 +505,16 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
                     Instant timestamp,
                     Collection<? extends BoundedWindow> windows,
                     PaneInfo pane) {
-                  output(
-                      mainOutputTag,
-                      WindowedValue.of(output, timestamp, windows, pane));
+                  output(mainOutputTag, WindowedValue.of(output, timestamp, windows, pane));
                 }
 
                 @Override
-                public <AdditionalOutputT> void outputWindowedValue(TupleTag<AdditionalOutputT> tag,
-                    AdditionalOutputT output, Instant timestamp,
-                    Collection<? extends BoundedWindow> windows, PaneInfo pane) {
+                public <AdditionalOutputT> void outputWindowedValue(
+                    TupleTag<AdditionalOutputT> tag,
+                    AdditionalOutputT output,
+                    Instant timestamp,
+                    Collection<? extends BoundedWindow> windows,
+                    PaneInfo pane) {
                   output(tag, WindowedValue.of(output, timestamp, windows, pane));
                 }
               },
@@ -497,7 +523,6 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
               10000,
               Duration.standardSeconds(10)));
     }
-
   }
 
   @Override
@@ -507,14 +532,14 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
   }
 
   @Override
-  public void beginWindow(long windowId) {
-  }
+  public void beginWindow(long windowId) {}
 
   @Override
   public void endWindow() {
     currentKeyTimerInternals.fireReadyTimers(
         currentKeyTimerInternals.currentProcessingTime().getMillis(),
-        this, TimeDomain.PROCESSING_TIME);
+        this,
+        TimeDomain.PROCESSING_TIME);
   }
 
   private static class LongMin {
@@ -531,7 +556,5 @@ public class ApexParDoOperator<InputT, OutputT> extends BaseOperator implements 
     public void clear() {
       state = Long.MAX_VALUE;
     }
-
   }
-
 }

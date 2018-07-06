@@ -15,12 +15,14 @@
 # limitations under the License.
 #
 
-"""iobase.RangeTracker implementations provided with Dataflow SDK.
+"""iobase.RangeTracker implementations provided with Apache Beam.
 """
 
 import logging
 import math
 import threading
+
+from six import integer_types
 
 from apache_beam.io import iobase
 
@@ -45,9 +47,9 @@ class OffsetRangeTracker(iobase.RangeTracker):
       raise ValueError('Start offset must not be \'None\'')
     if end is None:
       raise ValueError('End offset must not be \'None\'')
-    assert isinstance(start, (int, long))
+    assert isinstance(start, integer_types)
     if end != self.OFFSET_INFINITY:
-      assert isinstance(end, (int, long))
+      assert isinstance(end, integer_types)
 
     assert start <= end
 
@@ -121,7 +123,7 @@ class OffsetRangeTracker(iobase.RangeTracker):
       self._last_record_start = record_start
 
   def try_split(self, split_offset):
-    assert isinstance(split_offset, (int, long))
+    assert isinstance(split_offset, integer_types)
     with self._lock:
       if self._stop_offset == OffsetRangeTracker.OFFSET_INFINITY:
         logging.debug('refusing to split %r at %d: stop position unspecified',
@@ -275,17 +277,19 @@ class OrderedPositionRangeTracker(iobase.RangeTracker):
 class UnsplittableRangeTracker(iobase.RangeTracker):
   """A RangeTracker that always ignores split requests.
 
-  This can be used to make a given ``RangeTracker`` object unsplittable by
-  ignoring all calls to ``try_split()``. All other calls will be delegated to
-  the given ``RangeTracker``.
+  This can be used to make a given
+  :class:`~apache_beam.io.iobase.RangeTracker` object unsplittable by
+  ignoring all calls to :meth:`.try_split()`. All other calls will be delegated
+  to the given :class:`~apache_beam.io.iobase.RangeTracker`.
   """
 
   def __init__(self, range_tracker):
     """Initializes UnsplittableRangeTracker.
 
     Args:
-      range_tracker: a ``RangeTracker`` to which all method calls expect calls
-      to ``try_split()`` will be delegated.
+      range_tracker (~apache_beam.io.iobase.RangeTracker): a
+        :class:`~apache_beam.io.iobase.RangeTracker` to which all method
+        calls expect calls to :meth:`.try_split()` will be delegated.
     """
     assert isinstance(range_tracker, iobase.RangeTracker)
     self._range_tracker = range_tracker
